@@ -133,32 +133,100 @@ def main():
             # Single unified broadcast point to stdout for backend/IoT consumption
             logger.info(json.dumps(system_payload))
 
-            # --- 4. VISUALIZATION ENGINE ---
+            # --- 4. PRODUCTION VISUALIZATION ENGINE ---
             try:
-                # Renders static geometric boundaries and dynamically tracked IDs
+                # Render zone boundaries with transparent fills
                 display_frame = visualize_zones(display_frame, zone_mapper, track_output, zones_output)
                 roles_dict = system_payload.get("roles", {})
+                zones_map = zones_output.get("zones", {})
                 
-                # Extract and render Role & YOLO Confidence Score per tracked object
+                # Per-zone occupancy counter
+                zone_counts = {}
+                for oid, zname in zones_map.items():
+                    zone_counts[zname] = zone_counts.get(zname, 0) + 1
+                
+                # === PER-PERSON OVERLAY: Role + Zone + Confidence ===
                 for obj_id_str, bbox in track_output.get("objects", {}).items():
-                    if isinstance(bbox, list) and len(bbox) >= 5:
-                        conf = float(bbox[4])
+                    if isinstance(bbox, list) and len(bbox) >= 4:
+                        conf = float(bbox[4]) if len(bbox) >= 5 else 0.0
                         x1, y1, x2, y2 = map(int, bbox[:4])
                         role = roles_dict.get(obj_id_str, "CUSTOMER")
+                        zone = zones_map.get(obj_id_str, "unknown")
                         
-                        label_color = (0, 255, 255) if role == "CUSTOMER" else (255, 100, 100)
-                        if role == "SUSPECT": label_color = (0, 0, 255)
+                        # Color coding by role
+                        if role == "SUSPECT":
+                            box_color = (0, 0, 255)
+                            label_color = (0, 0, 255)
+                        elif role == "STAFF":
+                            box_color = (255, 100, 100)
+                            label_color = (255, 150, 100)
+                        else:
+                            box_color = (0, 255, 200)
+                            label_color = (0, 255, 200)
                         
-                        label = f"{role} ({conf:.2f})"
-                        cv2.putText(display_frame, label, (x1, y1 - 8), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, label_color, 2, cv2.LINE_AA)
+                        # Draw person bbox
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), box_color, 2)
+                        
+                        # Label: ID + Role + Confidence Badge
+                        id_label = f"ID:{obj_id_str}"
+                        role_label = f"{role} [{conf*100:.0f}%]"
+                        zone_label = f"@ {zone.upper()}"
+                        
+                        # Background pill for label
+                        cv2.rectangle(display_frame, (x1, y1 - 45), (x1 + 200, y1), (20, 20, 20), -1)
+                        cv2.putText(display_frame, id_label, (x1 + 3, y1 - 30),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+                        cv2.putText(display_frame, role_label, (x1 + 3, y1 - 15),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, label_color, 1, cv2.LINE_AA)
+                        cv2.putText(display_frame, zone_label, (x1 + 3, y1 - 2),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
                 
-                # Render Demographics Metrics overlay
+                # === ANALYTICS PANEL (Top-Right Corner) ===
+                panel_w, panel_h = 280, 200
+                fw = display_frame.shape[1]
+                px1, py1 = fw - panel_w - 10, 10
+                px2, py2 = fw - 10, py1 + panel_h
+                
+                # Semi-transparent panel
+                overlay = display_frame.copy()
+                cv2.rectangle(overlay, (px1, py1), (px2, py2), (15, 15, 15), -1)
+                display_frame = cv2.addWeighted(overlay, 0.75, display_frame, 0.25, 0)
+                cv2.rectangle(display_frame, (px1, py1), (px2, py2), (0, 255, 255), 1)
+                
+                # Title
+                cv2.putText(display_frame, "LIVE ANALYTICS", (px1 + 10, py1 + 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                
+                # People count
+                total = system_payload.get("people_count", 0)
                 staff_count = list(roles_dict.values()).count("STAFF")
                 cust_count = list(roles_dict.values()).count("CUSTOMER")
-                metrics_text = f"Staff Logged: {staff_count} | Customers: {cust_count}"
-                cv2.putText(display_frame, metrics_text, (30, 95), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                suspect_count = list(roles_dict.values()).count("SUSPECT")
+                
+                y_off = py1 + 55
+                cv2.putText(display_frame, f"Total: {total}", (px1 + 10, y_off),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"Staff: {staff_count}", (px1 + 10, y_off + 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 100), 1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"Customers: {cust_count}", (px1 + 10, y_off + 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 1, cv2.LINE_AA)
+                if suspect_count > 0:
+                    cv2.putText(display_frame, f"SUSPECTS: {suspect_count}", (px1 + 10, y_off + 75),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
+                
+                # Per-zone occupancy bars
+                y_off += 100
+                cv2.putText(display_frame, "Zone Occupancy:", (px1 + 10, y_off),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1, cv2.LINE_AA)
+                y_off += 20
+                for zname, zcount in zone_counts.items():
+                    if zname == "unknown":
+                        continue
+                    bar_len = min(zcount * 30, panel_w - 100)
+                    cv2.rectangle(display_frame, (px1 + 80, y_off - 10), (px1 + 80 + bar_len, y_off), (0, 200, 200), -1)
+                    cv2.putText(display_frame, f"{zname}: {zcount}", (px1 + 10, y_off),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
+                    y_off += 18
                 
                 # Add Global Threat memory & Synthesize ReID Vector Signature
                 if system_payload["theft"]:
