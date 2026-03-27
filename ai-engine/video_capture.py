@@ -49,6 +49,7 @@ def main():
 
     # 3. Continuously read frames in a loop
     while True:
+        assert cap is not None  # Type hint for IDE
         ret, frame = cap.read()
         
         # 4. Validate each frame (skip if None or ret is False)
@@ -105,7 +106,7 @@ def main():
             break
 
     # Clean up resources
-    if cap:
+    if cap is not None:
         cap.release()
     cv2.destroyAllWindows()
     logger.info("Video capture system shut down.")
