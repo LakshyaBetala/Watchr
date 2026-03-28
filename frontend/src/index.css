@@ -1,0 +1,155 @@
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-tactical: #0a0c10;
+    --panel-tactical: #11141a;
+    --border-tactical: #2d3440;
+    --text-primary: #e2e8f0;
+    --text-secondary: #8c9baf;
+    --accent-blue: #00F0FF;
+    --accent-blue-glow: rgba(0, 240, 255, 0.3);
+    --accent-orange: #f97316;
+    --accent-green: #10b981;
+    --accent-red: #ef4444;
+  }
+
+  body {
+    background-color: var(--bg-tactical);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: 0.01em;
+  }
+
+  /* Custom Scrollbar for tactical feel */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--bg-tactical);
+    border-left: 1px solid var(--border-tactical);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-tactical);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Chakra Petch', sans-serif;
+  }
+
+  /* Tactical Panel: Sharp edges, top-left chamfer via clip-path, heavy inset border feeling */
+  .premium-card, .tactical-panel {
+    background-color: var(--panel-tactical);
+    border: 1px solid var(--border-tactical);
+    position: relative;
+    /* subtle CRT scan grid over panels */
+    background-image: linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px);
+    background-size: 100% 4px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .tactical-panel:hover {
+    border-color: #4b5563;
+  }
+
+  /* For highly interactive raw buttons */
+  .tactical-btn {
+    background: transparent;
+    border: 1px solid var(--border-tactical);
+    color: var(--text-secondary);
+    font-family: 'Chakra Petch', sans-serif;
+    text-transform: uppercase;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: 6px 16px;
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .tactical-btn:hover {
+    background: var(--text-primary);
+    color: var(--bg-tactical);
+    border-color: var(--text-primary);
+  }
+  
+  .tactical-btn.active {
+    background: var(--accent-blue);
+    color: #fff;
+    border-color: var(--accent-blue);
+  }
+
+  /* Corner brackets decorative element */
+  .bracket-box {
+    position: relative;
+  }
+  .bracket-box::before, .bracket-box::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--text-secondary);
+    pointer-events: none;
+  }
+  .bracket-box::before {
+    top: -1px; left: -1px;
+    border-right: none;
+    border-bottom: none;
+  }
+  .bracket-box::after {
+    bottom: -1px; right: -1px;
+    border-left: none;
+    border-top: none;
+  }
+
+  .bg-grid {
+    background-size: 40px 40px;
+    background-image: 
+      linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 10px var(--accent-blue-glow);
+  }
+
+  .scanline {
+    width: 100%;
+    height: 100px;
+    z-index: 5;
+    background: linear-gradient(0deg, rgba(0, 0, 0, 0) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(0, 0, 0, 0) 100%);
+    position: absolute;
+    top: -100px;
+    left: 0;
+    pointer-events: none;
+    animation: scanline 8s linear infinite;
+  }
+
+  @keyframes scanline {
+    0% { top: -100px; }
+    100% { top: 100%; }
+  }
+}
+
+/* Radar Sweep Animation */
+@keyframes sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-sweep {
+  animation: sweep 4s linear infinite;
+  transform-origin: bottom right;
+}
