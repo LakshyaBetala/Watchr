@@ -4,6 +4,8 @@ import logging
 import time
 import numpy as np
 from collections import Counter
+import requests
+import threading
 
 from multi_camera import MultiCameraManager
 from detection import PersonDetector
@@ -35,6 +37,23 @@ def get_dominant_color(image, k=3):
     dominant = centers[counts.most_common(1)[0][0]]
     return [int(c) for c in dominant]
 
+def dispatch_to_backend(payload):
+    try:
+        mapped_payload = {
+            "theft": payload.get("theft", False),
+            "unauthorized_access": False, 
+            "people_count": payload.get("people_count", 0),
+            "tracked_ids": payload.get("ids", []),
+            "fire": payload.get("fire", False),
+            "thermal_temp": 25,
+            "cross_sell_opportunity": False,
+            "clip_url": "http://localhost:8080/live",
+            "confidence": payload.get("fire_confidence", 0.99)
+        }
+        requests.post("http://localhost:5050/api/detect", json=mapped_payload, timeout=0.5)
+    except requests.exceptions.RequestException:
+        pass
+
 def main():
     logger.info("Starting Watchr AI Engine...")
 
@@ -56,7 +75,7 @@ def main():
         # Init modules — detection engine auto-selects ONNX or Ultralytics
         detector = PersonDetector(model_name="yolov8n.pt", conf_thresh=0.5)
         tracker = CentroidTracker(max_distance=50, max_missed=5)
-        zone_mapper = ZoneMapper()
+        zone_mapper = ZoneMapper()  # Evaluates physical mapping
         theft_engine = TheftDetectionEngine(shelf_dwell_threshold=3, theft_confirm_threshold=3)
         fire_engine = FireDetector(area_threshold=5000, buffer_size=5, min_trigger=3)
         
@@ -165,6 +184,9 @@ def main():
             }
 
             logger.info(json.dumps(system_payload))
+            
+            # Fire async HTTP POST to Flask backend
+            threading.Thread(target=dispatch_to_backend, args=(system_payload,), daemon=True).start()
 
             # ── 10. VISUALIZATION ────────────────────────────────────
             try:
