@@ -1,327 +1,257 @@
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid,
-} from "recharts";
-import {
-  UserCheck, ScanFace, Clock, CheckCircle2,
-  XCircle, AlertTriangle, User, Activity,
-} from "lucide-react";
-import { employees, faceLogData, shiftActivity } from "@/data/watchrMockData";
+import { motion } from "framer-motion";
+import { UserPlus, MapPin, Clock, Camera, ScanFace } from "lucide-react";
+import { BaseCard, KpiCard } from "./components/DashboardUI";
 
-const containerVar = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.07, delayChildren: 0.05 } },
+// ─── Design System Constants ─────────────────────────────────────────────────
+const MOCK_EMPLOYEES = [
+  {
+    id: "EMP-7001",
+    uniform_bgr: [34, 45, 180],
+    status: "Shift_Started",
+    name: "Aisha Patel",
+    zone: "Billing",
+    since: "09:00 AM",
+  },
+  {
+    id: "EMP-7002",
+    uniform_bgr: [180, 120, 34],
+    status: "Shift_Started",
+    name: "Marcus Johnson",
+    zone: "Shelf",
+    since: "10:30 AM",
+  },
+  {
+    id: "EMP-7003",
+    uniform_bgr: [34, 160, 90],
+    status: "Off_Shift",
+    name: "Sarah Chen",
+    zone: "—",
+    since: "—",
+  },
+  {
+    id: "EMP-7004",
+    uniform_bgr: [100, 45, 200],
+    status: "Shift_Started",
+    name: "David Kim",
+    zone: "Entrance",
+    since: "08:15 AM",
+  }
+];
+
+// Mock for Role Verification Feed (Recent scan attempts)
+const RECENT_SCANS = [
+  { time: "Just now", result: "Verified", id: "EMP-7002", bgr: [180, 120, 34], match: 98.4 },
+  { time: "2m ago", result: "Verified", id: "EMP-7001", bgr: [35, 47, 182], match: 95.1 }, // Slight color variance
+  { time: "15m ago", result: "Unknown", id: "UNREGISTERED", bgr: [50, 50, 50], match: 12.0 },
+  { time: "1h ago", result: "Verified", id: "EMP-7004", bgr: [98, 45, 198], match: 96.5 },
+];
+
+const bgrToRgb = (bgr: number[]) => `rgb(${bgr[2]}, ${bgr[1]}, ${bgr[0]})`;
+
+const getInitials = (name: string) => {
+  return name.split(" ").map(n => n.charAt(0).toUpperCase()).join("");
 };
-const itemVar = {
-  hidden: { opacity: 0, y: 14 },
-  visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 320, damping: 28 } },
-};
-
-const GlowTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="bg-[#11141a] border border-[#2d3440] px-3 py-2 rounded text-xs font-mono">
-      <p className="text-[#8c9baf] mb-1">{label}:00</p>
-      {payload.map((p: any) => (
-        <p key={p.name} style={{ color: p.color }}>{p.name}: {p.value}</p>
-      ))}
-    </div>
-  );
-};
-
-// Animated confidence arc (mini radial)
-function ConfArc({ conf, size = 40 }: { conf: number; size?: number }) {
-  const r = size / 2 - 4;
-  const circ = 2 * Math.PI * r;
-  const dash = circ * conf;
-  const color = conf > 0.85 ? "#10b981" : conf > 0.65 ? "#F59E0B" : "#FF003C";
-
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <circle cx={size / 2} cy={size / 2} r={r}
-        strokeWidth="2.5" stroke="#2d3440" fill="none" />
-      <motion.circle
-        cx={size / 2} cy={size / 2} r={r}
-        strokeWidth="2.5" fill="none"
-        stroke={color}
-        strokeLinecap="round"
-        strokeDasharray={`${dash} ${circ}`}
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        initial={{ strokeDasharray: `0 ${circ}` }}
-        animate={{ strokeDasharray: `${dash} ${circ}` }}
-        transition={{ duration: 0.8, ease: "easeOut" }}
-      />
-      <text x={size / 2} y={size / 2 + 3.5}
-        textAnchor="middle" fontSize="7" fill={color}
-        fontFamily="IBM Plex Mono" fontWeight="bold">
-        {Math.round(conf * 100)}%
-      </text>
-    </svg>
-  );
-}
-
-// Uniform color chip (K-Means result visualization)
-function UniformChip({ color, empId }: { color: string; empId: string }) {
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <motion.div
-        whileHover={{ scale: 1.15 }}
-        className="w-8 h-8 rounded-lg border border-white/10 shadow-inner"
-        style={{ background: color }}
-        title={`Dominant uniform color (K-Means k=3) for ${empId}`}
-      />
-      <span className="text-[7px] font-mono text-[#8c9baf]">{color.toUpperCase()}</span>
-    </div>
-  );
-}
-
-// Status pill
-function StatusPill({ status }: { status: string }) {
-  const isActive = status === "active";
-  return (
-    <span className={`px-2 py-0.5 rounded text-[8px] font-mono font-bold uppercase tracking-wider
-      ${isActive
-        ? "bg-[#10b981]/15 text-[#10b981] border border-[#10b981]/25"
-        : "bg-[#2d3440]/80 text-[#8c9baf] border border-[#2d3440]"
-      }`}>
-      {status}
-    </span>
-  );
-}
-
-// Face log action icon
-function FaceAction({ action }: { action: string }) {
-  if (action === "UNKNOWN" || action === "Unknown Face")
-    return <AlertTriangle className="w-3.5 h-3.5 text-[#F59E0B]" />;
-  if (action === "Clock-Out")
-    return <XCircle className="w-3.5 h-3.5 text-[#8c9baf]" />;
-  return <CheckCircle2 className="w-3.5 h-3.5 text-[#10b981]" />;
-}
 
 export default function EmployeeKiosk() {
-  const [selected, setSelected] = useState<string | null>(null);
-
-  const selectedEmp = employees.find(e => e.id === selected);
+  const activeStaff = MOCK_EMPLOYEES.filter(e => e.status === "Shift_Started").length;
 
   return (
-    <motion.div variants={containerVar} initial="hidden" animate="visible"
-      className="flex flex-col h-full gap-6">
-
-      {/* Header */}
-      <motion.header variants={itemVar} className="flex items-center justify-between flex-shrink-0">
+    <div className="dashboard-grid min-h-screen">
+      
+      {/* ── HEADER ROW ──────────────────────────────────────────────────────── */}
+      <div className="col-12 flex justify-between items-end mb-2">
         <div>
-          <h1 className="text-[22px] font-black font-display tracking-[0.15em] text-[#00F0FF]">
-            EMPLOYEE KIOSK
-          </h1>
-          <p className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-[0.25em] mt-0.5">
-            K-Means Uniform Extraction · Face Analysis · Auto-Registration
-          </p>
+          <h1 className="text-3xl font-black text-[var(--text-primary)] font-jakarta tracking-tight">Identity & Uniform</h1>
+          <p className="text-[var(--text-muted)] mt-1 font-semibold text-sm">Color-space K-Means segmentation verification</p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded border bg-[#00F0FF]/5 border-[#00F0FF]/20 text-[10px] font-mono text-[#00F0FF]">
-            <ScanFace className="w-3 h-3" />
-            {employees.filter(e => e.status === "active").length} ACTIVE
-          </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded border bg-[#11141a] border-[#2d3440] text-[10px] font-mono text-[#8c9baf]">
-            <Activity className="w-3 h-3" />
-            K-MEANS k=3
-          </div>
-        </div>
-      </motion.header>
-
-      {/* Main body */}
-      <div className="flex gap-4 flex-1 min-h-0">
-
-        {/* Left: Employee roster */}
-        <motion.div variants={itemVar}
-          className="w-80 tactical-panel rounded-xl border border-[#2d3440] flex flex-col overflow-hidden flex-shrink-0">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2d3440]">
-            <UserCheck className="w-3.5 h-3.5 text-[#00F0FF]" />
-            <span className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-widest">Registered Staff</span>
-            <span className="ml-auto text-[9px] font-mono text-[#00F0FF]">{employees.length} profiles</span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
-            {employees.map((emp) => (
-              <motion.button key={emp.id}
-                variants={itemVar}
-                whileHover={{ x: 2 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => setSelected(selected === emp.id ? null : emp.id)}
-                className={`w-full text-left flex items-center gap-3 p-3 rounded-lg border transition-all
-                  ${selected === emp.id
-                    ? "border-[#00F0FF]/40 bg-[#00F0FF]/5"
-                    : "border-transparent hover:border-[#2d3440] hover:bg-white/2"
-                  }`}>
-
-                {/* Avatar */}
-                <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 border border-white/10"
-                  style={{ background: `${emp.uniform}30` }}>
-                  <User className="w-4 h-4 text-white/60" />
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-mono font-bold text-white truncate">{emp.name}</span>
-                    <StatusPill status={emp.status} />
-                  </div>
-                  <p className="text-[9px] font-mono text-[#8c9baf] mt-0.5">{emp.id}</p>
-                  <p className="text-[8px] font-mono text-[#8c9baf] flex items-center gap-1 mt-0.5">
-                    <Clock className="w-2.5 h-2.5" />
-                    {emp.shift}
-                  </p>
-                </div>
-
-                <ConfArc conf={emp.faceConf} size={36} />
-              </motion.button>
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Right: detail + charts */}
-        <div className="flex-1 flex flex-col gap-4 min-h-0">
-
-          {/* Employee detail card */}
-          <AnimatePresence mode="wait">
-            {selectedEmp ? (
-              <motion.div key={selectedEmp.id}
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ type: "spring", stiffness: 350, damping: 30 }}
-                className="tactical-panel rounded-xl border border-[#00F0FF]/30 p-5 flex gap-6 flex-shrink-0">
-
-                {/* Left info */}
-                <div className="flex flex-col gap-3 flex-1">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-xl flex items-center justify-center border border-[#00F0FF]/25"
-                      style={{ background: `${selectedEmp.uniform}25` }}>
-                      <User className="w-6 h-6 text-[#00F0FF]" />
-                    </div>
-                    <div>
-                      <h3 className="text-base font-black font-display text-white tracking-wide">{selectedEmp.name}</h3>
-                      <p className="text-[9px] font-mono text-[#00F0FF]">{selectedEmp.id}</p>
-                    </div>
-                    <div className="ml-auto">
-                      <StatusPill status={selectedEmp.status} />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    {[
-                      { label: "Shift", value: selectedEmp.shift },
-                      { label: "Status", value: selectedEmp.status.toUpperCase() },
-                      { label: "Face Confidence", value: `${(selectedEmp.faceConf * 100).toFixed(0)}%` },
-                      { label: "Analysis", value: "Haar Cascade" },
-                    ].map(({label, value}) => (
-                      <div key={label} className="p-2.5 rounded-lg bg-[#0a0c10] border border-[#2d3440]">
-                        <p className="text-[8px] font-mono text-[#8c9baf] uppercase tracking-wider">{label}</p>
-                        <p className="text-[11px] font-mono text-white font-bold mt-0.5">{value}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* K-Means uniform color chips */}
-                <div className="flex flex-col gap-3 items-center">
-                  <p className="text-[8px] font-mono text-[#8c9baf] uppercase tracking-widest">K-Means Clusters</p>
-                  <div className="flex gap-3">
-                    {/* Simulate 3 cluster colors from the dominant uniform color */}
-                    {[selectedEmp.uniform, adjustHex(selectedEmp.uniform, 30), adjustHex(selectedEmp.uniform, -30)].map((c, i) => (
-                      <UniformChip key={i} color={c} empId={selectedEmp.id} />
-                    ))}
-                  </div>
-                  <p className="text-[8px] font-mono text-[#8c9baf] text-center max-w-[120px] leading-relaxed">
-                    Extracted from torso ROI via k=3 clustering
-                  </p>
-                </div>
-              </motion.div>
-            ) : (
-              <motion.div key="empty"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="tactical-panel rounded-xl border border-[#2d3440] p-5 flex items-center justify-center gap-3 flex-shrink-0">
-                <User className="w-4 h-4 text-[#8c9baf]" />
-                <span className="text-[11px] font-mono text-[#8c9baf]">Select an employee to view profile details</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Bottom row: face log + shift chart */}
-          <div className="flex gap-4 flex-1 min-h-0">
-
-            {/* Face scan log */}
-            <motion.div variants={itemVar}
-              className="flex-1 tactical-panel rounded-xl border border-[#2d3440] flex flex-col overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2d3440] flex-shrink-0">
-                <ScanFace className="w-3.5 h-3.5 text-[#00F0FF]" />
-                <span className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-widest">Face Scan Log</span>
-                <div className="ml-auto flex items-center gap-1.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-[#00F0FF] animate-pulse" />
-                  <span className="text-[9px] font-mono text-[#00F0FF]">LIVE</span>
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto p-3">
-                <motion.div variants={containerVar} initial="hidden" animate="visible"
-                  className="flex flex-col gap-1.5">
-                  {faceLogData.map((entry, i) => {
-                    const isUnknown = entry.id === "UNKNOWN";
-                    return (
-                      <motion.div key={i} variants={itemVar}
-                        className={`flex items-center gap-3 px-3 py-2 rounded border text-xs font-mono
-                          ${isUnknown
-                            ? "border-[#F59E0B]/25 bg-[#F59E0B]/5"
-                            : "border-[#2d3440] bg-[#0a0c10]"
-                          }`}>
-                        <FaceAction action={entry.action} />
-                        <span className="text-[#8c9baf] flex-shrink-0">{entry.ts}</span>
-                        <span className={`font-bold flex-shrink-0 ${isUnknown ? "text-[#F59E0B]" : "text-[#00F0FF]"}`}>
-                          {entry.id}
-                        </span>
-                        <span className="text-white/70 text-[10px] truncate">{entry.action}</span>
-                        <span className="ml-auto text-[#8c9baf] flex-shrink-0 text-[9px]">{entry.zone}</span>
-                        <span className={`text-[9px] flex-shrink-0 ${entry.conf > 0.7 ? "text-[#10b981]" : "text-[#F59E0B]"}`}>
-                          {(entry.conf * 100).toFixed(0)}%
-                        </span>
-                      </motion.div>
-                    );
-                  })}
-                </motion.div>
-              </div>
-            </motion.div>
-
-            {/* Shift occupancy chart */}
-            <motion.div variants={itemVar}
-              className="w-56 tactical-panel rounded-xl border border-[#2d3440] p-4 flex flex-col gap-2">
-              <p className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-widest">Staff On-Shift / Hour</p>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={shiftActivity} margin={{ top: 4, right: 0, left: -30, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                  <XAxis dataKey="hour" tick={{ fontSize: 7, fill: "#8c9baf", fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 7, fill: "#8c9baf", fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
-                  <Tooltip content={<GlowTooltip />} />
-                  <Bar dataKey="count" fill="#00F0FF" fillOpacity={0.75} radius={[2, 2, 0, 0]} name="Staff" />
-                </BarChart>
-              </ResponsiveContainer>
-            </motion.div>
-
-          </div>
-        </div>
+        <button className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold border border-[var(--accent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] transition-colors shadow-[0_0_15px_color-mix(in_srgb,var(--accent)_20%,transparent)]">
+          <UserPlus size={16} />
+          Register New Staff
+        </button>
       </div>
-    </motion.div>
-  );
-}
 
-// Simple hex color brightness adjuster for K-Means cluster simulation
-function adjustHex(hex: string, amount: number): string {
-  try {
-    const clamp = (v: number) => Math.max(0, Math.min(255, v));
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    return `#${clamp(r + amount).toString(16).padStart(2, "0")}${clamp(g + amount).toString(16).padStart(2, "0")}${clamp(b + amount).toString(16).padStart(2, "0")}`;
-  } catch {
-    return hex;
-  }
+      {/* ── KPI ROW ──────────────────────────────────────────────────────────── */}
+      <KpiCard
+        className="col-4"
+        title="Total Registered"
+        value={MOCK_EMPLOYEES.length}
+        icon={UserPlus}
+        trendValue="Active profiles"
+        trendUp={true}
+      />
+      <KpiCard
+        className="col-4"
+        title="On Shift"
+        value={activeStaff}
+        icon={Clock}
+        trendValue="Currently deployed"
+        trendUp={true}
+        accent={true}
+      />
+      <KpiCard
+        className="col-4"
+        title="System Status"
+        value="K-Means Active"
+        icon={ScanFace}
+        trendValue="Color segmentation live"
+        trendUp={true}
+      />
+
+      {/* ── MAIN COLUMNS ─────────────────────────────────────────────────────── */}
+      <div className="col-8 grid grid-cols-2 gap-4 h-fit">
+        {MOCK_EMPLOYEES.map((emp, i) => {
+          const rgbColor = bgrToRgb(emp.uniform_bgr);
+          const isOnShift = emp.status === "Shift_Started";
+
+          return (
+            <motion.div
+              key={emp.id}
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 + i * 0.05 }}
+              className="p-5 rounded-2xl flex flex-col gap-5 border border-[var(--border)] bg-[var(--bg-card)] hover:border-[var(--text-subtle)] transition-colors group relative overflow-hidden"
+            >
+              {/* Tactical Backdrop */}
+              <div className="absolute inset-x-0 top-0 h-24 pointer-events-none opacity-[0.03] z-0" 
+                   style={{ background: 'repeating-linear-gradient(90deg, var(--text-muted), var(--text-muted) 1px, transparent 1px, transparent 40px)' }} />
+              {/* Card Header */}
+              <div className="flex justify-between items-start">
+                <div className="flex gap-4 items-center">
+                  <div className="relative">
+                    {/* Hex Background Pattern */}
+                    <div className="absolute inset-0 opacity-20 pointer-events-none scale-150" 
+                         style={{ backgroundImage: 'radial-gradient(var(--text-muted) 1px, transparent 1px)', backgroundSize: '8px 8px' }} />
+                    <div
+                      className="w-12 h-12 rounded-full flex items-center justify-center font-black text-lg text-white shadow-lg transition-transform group-hover:scale-105 relative z-10"
+                      style={{ background: rgbColor, textShadow: "0px 1px 3px rgba(0,0,0,0.5)" }}
+                    >
+                      {getInitials(emp.name)}
+                    </div>
+                  </div>
+                    <span className="text-[0.55rem] font-jetbrains font-black text-[var(--accent)] opacity-40 uppercase tracking-widest mb-0.5">
+                      [STF:{emp.id.replace('EMP-', '')}-A]
+                    </span>
+                    <span className="font-bold text-lg text-[var(--text-primary)] leading-none">
+                      {emp.name}
+                    </span>
+                </div>
+                
+                <div
+                  className={`px-3 py-1 rounded-full text-[0.65rem] font-bold uppercase tracking-wider border ${
+                    isOnShift ? "text-[var(--positive)] border-[var(--positive)] bg-[color-mix(in_srgb,var(--positive)_10%,transparent)]" : "text-[var(--text-muted)] border-[var(--border)] bg-[var(--bg-base)]"
+                  }`}
+                >
+                  {isOnShift ? "On Shift" : "Off Shift"}
+                </div>
+              </div>
+
+              {/* Uniform Color Swatch */}
+              <div className="flex items-center justify-between p-3 rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg-base)]">
+                <span className="text-[0.65rem] font-bold uppercase tracking-wider text-[var(--text-muted)]">
+                  Vector Profile
+                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-[var(--text-muted)] font-jetbrains">
+                    [{emp.uniform_bgr.join(', ')}]
+                  </span>
+                  <div
+                    className="w-6 h-6 rounded-full border border-[rgba(255,255,255,0.1)] shadow-inner"
+                    style={{ background: rgbColor }}
+                  />
+                </div>
+              </div>
+
+              {/* Location & Time Info */}
+              <div className="flex justify-between pt-2 border-t border-[var(--border)]">
+                <div className="flex items-center gap-2">
+                  <MapPin size={14} className={isOnShift ? "text-[var(--accent)]" : "text-[var(--text-muted)]"} />
+                  <span className={`text-sm font-semibold ${isOnShift ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>
+                    {emp.zone}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Clock size={14} className={isOnShift ? "text-[var(--accent)]" : "text-[var(--text-muted)]"} />
+                  <span className={`text-sm font-semibold font-jetbrains ${isOnShift ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>
+                    {emp.since}
+                  </span>
+                </div>
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* ── ROLE VERIFICATION FEED ────────────────────────────────────────────── */}
+      <BaseCard className="col-4 flex flex-col p-0 min-h-[600px]">
+        <div className="card-header px-6 pt-5 pb-3 border-b border-[var(--border)] m-0 flex-shrink-0 relative overflow-hidden">
+          {/* Scanline Effect */}
+          <div className="absolute inset-0 opacity-[0.05] pointer-events-none animate-scan" style={{ background: 'linear-gradient(transparent, var(--accent), transparent)', height: '10%' }} />
+          <span className="card-title text-[var(--text-primary)] relative z-10">Role Verification Feed</span>
+        </div>
+        
+        <div className="flex-1 p-5 overflow-y-auto">
+          <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-[color-mix(in_srgb,var(--bg-card)_50%,transparent)] border border-[var(--border)] border-dashed">
+            <Camera className="w-8 h-8 text-[var(--text-subtle)]" strokeWidth={1.5} />
+            <div className="flex flex-col text-xs">
+              <span className="text-[var(--text-primary)] font-bold">Live Extractor Enabled</span>
+              <span className="text-[var(--text-muted)]">Camera feed polling for staff profiles.</span>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4">
+            {RECENT_SCANS.map((scan, i) => {
+              const isVerified = scan.result === "Verified";
+              const bgColor = isVerified ? "var(--positive)" : "var(--negative)";
+              
+              return (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.3 + i * 0.1 }}
+                  className="flex flex-col p-4 rounded-xl border border-[var(--border)] bg-[var(--bg-base)]"
+                >
+                  <div className="flex justify-between items-center mb-3">
+                    <span className={`text-xs font-bold uppercase ${isVerified ? 'text-[var(--positive)]' : 'text-[var(--negative)]'}`}>
+                      {scan.result}
+                    </span>
+                    <span className="text-xs text-[var(--text-muted)] font-jetbrains">{scan.time}</span>
+                  </div>
+                  
+                  <div className="flex justify-between items-end">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg shadow-inner border border-[rgba(255,255,255,0.1)]" style={{ background: bgrToRgb(scan.bgr) }} />
+                      <div className="flex flex-col">
+                        <span className="text-sm font-bold text-[var(--text-primary)]">{scan.id}</span>
+                        <span className="text-[0.65rem] font-jetbrains text-[var(--text-subtle)] mt-0.5">
+                          BGR: {scan.bgr.join(',')}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-col items-end">
+                      <span className="text-[0.65rem] text-[var(--text-muted)] uppercase font-bold mb-0.5">Match</span>
+                      <span className="text-sm font-jetbrains font-bold" style={{ color: bgColor }}>{scan.match}%</span>
+                    </div>
+                  </div>
+                  
+                  {/* Confidence Bar */}
+                  <div className="mt-4 h-1 w-full bg-[var(--border)] rounded-full overflow-hidden">
+                    <motion.div 
+                      className="h-full rounded-full"
+                      style={{ background: bgColor }}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${scan.match}%` }}
+                      transition={{ delay: 0.5 + i * 0.1, duration: 1 }}
+                    />
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </div>
+      </BaseCard>
+
+    </div>
+  );
 }

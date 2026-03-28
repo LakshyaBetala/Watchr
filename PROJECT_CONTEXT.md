@@ -411,22 +411,300 @@ Broadcast via `logger.info(json.dumps(system_payload))` to `stdout`. The backend
 
 ---
 
-## 5. Backend — Current Status
+## 5. Backend — Complete Deep-Dive
 
 **Location**: `Watchr/backend/`
+**Status**: ✅ **IMPLEMENTED**
+**Technology**: Python 3 + Flask 3.0 + Supabase + IoT (ESP8266/ESP32)
+**Port**: `5000` (default, configurable via `PORT` env var)
 
-**Status**: **PLACEHOLDER**. The `README.md` contains only "just a placeholder file".
+### Architecture Overview
 
-**Planned Architecture** (not yet implemented):
-- **Technology**: Node.js with `child_process` to spawn `python main.py` as a subprocess.
-- **Protocol**: WebSockets via `Socket.io` to broadcast the JSON telemetry from Python `stdout` to all connected frontend clients in real-time.
-- **Database**: Supabase or PostgreSQL to persist confirmed theft/fire alerts with timestamps.
-- **Integration points**: REST API endpoints for POS/ERP systems.
+The backend is a **Flask REST API** that acts as the central intelligence hub between:
+1. The **AI Engine** (sends POST requests with detection telemetry).
+2. **Supabase** (persists all alerts and customer sessions to the cloud database).
+3. **IoT Hardware** (ESP8266/ESP32 buzzer/alarm devices triggered via HTTP GET).
+4. The **React Frontend** (polls REST endpoints for live status, logs, and analytics).
 
-**What needs to be built**:
-1. A Node.js process that reads from Python's stdout line-by-line.
-2. A Socket.io server that emits each JSON line as a `telemetry` event.
-3. An alerts persistence service that writes only `theft: true` or `fire: true` events to the database.
+```
+AI Engine (main.py)
+    │  POST /api/detect  (JSON payload)
+    ▼
+Flask Backend (app.py)
+    ├── Decision Engine  →  Supabase (logs table)
+    ├── Alert Service    →  ESP8266 IoT alarm
+    ├── Tracking Service →  Supabase (customers table)
+    └── REST API         →  React Frontend (polls GET endpoints)
+```
+
+---
+
+### 5.1 `backend/requirements.txt`
+```
+Flask==3.0.0
+Werkzeug==3.0.0
+requests==2.31.0
+flask-cors==4.0.0
+supabase
+```
+- `flask-cors`: Enables cross-origin requests from the React frontend (running on port 8080) to the Flask server (port 5000).
+- `supabase`: Official Python client for the Supabase cloud database.
+- `requests`: Used by `alert_service.py` to ping IoT devices.
+
+---
+
+### 5.2 `backend/config.py`
+**Role**: Centralized configuration. All thresholds and credentials live here and can be overridden via environment variables.
+
+```python
+class Config:
+    DEBUG = True
+    PORT = int(os.environ.get('PORT', 5000))
+
+    # IoT edge device (ESP8266, buzzer, siren)
+    ESP_IP = os.environ.get('ESP_IP', 'http://192.168.1.100')
+
+    # Alert thresholds
+    CROWD_DENSITY_THRESHOLD = 50     # People count before "crowd warning"
+    DWELL_TIME_THRESHOLD    = 300    # Seconds before "suspicious dwell"
+    FIRE_CONFIDENCE_THRESHOLD = 0.85
+    THERMAL_SPIKE_THRESHOLD = 60     # Celsius (from ESP32 thermal sensor)
+
+    STORE_ID = "STR-001"
+
+    # Supabase cloud database credentials
+    SUPABASE_URL = "https://jqybouilcscdjouueaum.supabase.co"
+    SUPABASE_KEY = "<service_role_key>"   # Full service role JWT
+```
+
+**Key insight**: All thresholds are environment-variable overridable. In production, set `CROWD_DENSITY_THRESHOLD=30` for a small shop, `60` for a supermarket, without changing code.
+
+---
+
+### 5.3 `backend/app.py`
+**Role**: Flask application factory. Entry point and server bootstrap.
+
+```python
+def create_app():
+    app = Flask(__name__)
+    CORS(app)                               # Allow frontend cross-origin requests
+    app.config.from_object(Config)
+
+    # Register all route blueprints under /api prefix
+    app.register_blueprint(detect_bp,    url_prefix='/api')
+    app.register_blueprint(status_bp,    url_prefix='/api')
+    app.register_blueprint(logs_bp,      url_prefix='/api')
+    app.register_blueprint(customers_bp, url_prefix='/api')
+
+    @app.route("/")
+    def index():
+        return jsonify({"status": "Watchr AI Backend is running in secure mode."})
+```
+
+**Run command**: `python app.py`
+**Health check**: `GET http://localhost:5000/` → `{"status": "Watchr AI Backend is running in secure mode."}`
+
+---
+
+### 5.4 `backend/database/db.py`
+**Role**: The single Supabase client singleton. Manages both cloud persistence and an in-memory cache layer for performance.
+
+**Class: `Database`**
+
+**`__init__()`**:
+- Creates a `supabase.Client` using `SUPABASE_URL` and `SUPABASE_KEY` from Config.
+- Initializes an in-memory dict `self.customers = {}` as a speed cache.
+- `self.current_status = "SAFE"` and `self.people_count = 0` for instant dashboard reads.
+
+**`add_log(event_type, details)` → saves a row to the `logs` Supabase table**:
+```python
+log_entry = {
+    "event":   event_type,       # e.g. "THEFT_DETECTED"
+    "details": details,          # e.g. {"confidence": 0.99}
+    "time":    datetime.utcnow().isoformat()
+}
+self.client.table("logs").insert(log_entry).execute()
+```
+Falls back gracefully on Supabase errors (prints the error, doesn't crash the API).
+
+**`get_logs(limit=50)` → queries `logs` table ordered newest-first**:
+```python
+response = self.client.table("logs").select("*").order("time", desc=True).limit(limit).execute()
+return response.data
+```
+
+**`update_status(new_status, count=None)`**:
+- Updates in-memory `current_status` and `people_count`.
+- No database write — this is a hot-path called on every incoming detection, so it deliberately avoids a DB roundtrip for speed.
+
+**`upsert_customer(cid, status="ACTIVE")`**:
+- On **first detection** of an ID: inserts a new row to `customers` table with `first_seen`, `last_seen`, `status`, `dwell_time=0`.
+- On **subsequent detections**: updates `last_seen`, `status`, and computes `dwell_time = (now - first_seen).total_seconds()`.
+- Both operations also update the in-memory `self.customers` cache.
+
+**Supabase Tables Required**:
+| Table | Columns |
+|---|---|
+| `logs` | `event` (text), `details` (jsonb), `time` (timestamptz) |
+| `customers` | `customer_id` (text PK), `first_seen` (timestamptz), `last_seen` (timestamptz), `status` (text), `dwell_time` (float) |
+
+**`db` singleton**: A module-level instance `db = Database()` is created once on import. All other files import this single object — no re-connections.
+
+---
+
+### 5.5 `backend/services/decision_engine.py`
+**Role**: The **intelligence core** of the backend. Receives the raw AI payload and decides what event occurred, what to log, and whether to fire an IoT alert.
+
+**`process_detection_event(ai_data)` → returns `event` string**
+
+Input payload (the JSON from `POST /api/detect`, matching the AI Engine output contract):
+```json
+{
+  "theft": false,
+  "unauthorized_access": false,
+  "people_count": 3,
+  "tracked_ids": [1, 2, 3],
+  "fire": false,
+  "thermal_temp": 28,
+  "confidence": 0.95
+}
+```
+
+Decision priority chain (highest priority first):
+1. `fire == True` → `event = "FIRE_DETECTED"`
+2. `thermal_temp > THERMAL_SPIKE_THRESHOLD (60°C)` → `event = "THERMAL_ALERT"` (ESP32 hardware sensor)
+3. `theft == True` → `event = "THEFT_DETECTED"`
+4. `unauthorized_access == True` → `event = "UNAUTHORIZED_ACCESS"`
+5. `people_count > CROWD_DENSITY_THRESHOLD (50)` → `event = "CROWD_DENSITY_WARNING"`
+6. None of the above → `event = "SAFE"`
+
+**Post-decision actions**:
+- Always: `db.update_status(event, count=people_count)` — in-memory update.
+- If tracked_ids present: `update_customer_tracking(tracked_ids)` — upsert to Supabase customers.
+- If `event != "SAFE"`: `db.add_log(event, details)` + `trigger_alert(event)` — persist + IoT ping.
+- If transitioning back to SAFE: `trigger_alert("SAFE")` — resets IoT alarm.
+
+---
+
+### 5.6 `backend/services/alert_service.py`
+**Role**: IoT hardware trigger. Pings an ESP8266/ESP32 device on the store LAN to activate physical alarms (buzzers, sirens, lights).
+
+**`trigger_alert(event_type)`**:
+- **Debounce**: Only fires if >5 seconds have passed since the last trigger (prevents spam).
+- `"SAFE"` event → `GET http://{ESP_IP}/safe` — turns off alarm.
+- Any other event → `GET http://{ESP_IP}/alert?type={event_type}` — activates alarm.
+- **Graceful fallback**: If no physical device is connected (e.g., during dev/demo), the `requests` timeout of 1 second fails silently and logs `"IoT Fallback - Event logged successfully"`. The rest of the system is unaffected.
+
+---
+
+### 5.7 `backend/services/tracking_service.py`
+**Role**: Customer analytics data layer. Translates AI tracker IDs into Supabase customer sessions.
+
+**`update_customer_tracking(detected_ids)`**:
+- Iterates through `tracked_ids` from the AI payload.
+- Calls `db.upsert_customer(str(pid), "ACTIVE")` for each ID.
+- IDs are stringified (e.g., `1` → `"1"`) to match JSON key conventions.
+
+**`get_customer_analytics()` → called by `GET /api/customers`**:
+- Reads from the **in-memory cache** (`db.customers`), not Supabase, for zero-latency response.
+- Returns:
+```json
+{
+  "total_unique_visitors": 14,
+  "current_active_count": 3,
+  "tracking_logs": [
+    {"customer_id": "1", "first_seen": "...", "last_seen": "...", "status": "ACTIVE", "dwell_time": 142.3}
+  ]
+}
+```
+
+---
+
+### 5.8 REST API — Complete Endpoint Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/` | Health check — confirms server is running |
+| `POST` | `/api/detect` | **Primary integration point** — AI Engine posts each frame's telemetry here |
+| `GET` | `/api/status` | Returns current system state + people count (for dashboard header) |
+| `GET` | `/api/logs?limit=50` | Returns last N alert events from Supabase (for Alerts Center dashboard) |
+| `GET` | `/api/customers` | Returns visitor analytics from in-memory cache (for Customer Analytics page) |
+
+**`POST /api/detect` — Payload Contract**:
+```json
+{
+  "theft": false,
+  "unauthorized_access": false,
+  "people_count": 3,
+  "tracked_ids": [1, 2, 3],
+  "fire": false,
+  "thermal_temp": 28,
+  "confidence": 0.95,
+  "zone": "SHELF"
+}
+```
+**Response**:
+```json
+{"status": "success", "system_state": "THEFT_DETECTED"}
+```
+
+**`GET /api/status`**:
+```json
+{"status": "SAFE", "people_count": 3}
+```
+
+**`GET /api/logs?limit=50`**:
+```json
+{
+  "logs": [
+    {"event": "THEFT_DETECTED", "details": {"confidence": 0.99}, "time": "2026-03-28T05:30:00"}
+  ]
+}
+```
+
+---
+
+### 5.9 How to Run the Backend
+
+```bash
+cd backend
+pip install -r requirements.txt
+python app.py
+# Server running at http://localhost:5000
+```
+
+**Test the health check**:
+```bash
+curl http://localhost:5000/
+# → {"status": "Watchr AI Backend is running in secure mode."}
+```
+
+**Simulate an AI detection event**:
+```bash
+curl -X POST http://localhost:5000/api/detect \
+  -H "Content-Type: application/json" \
+  -d '{"theft": true, "people_count": 2, "tracked_ids": [1, 2], "fire": false, "confidence": 0.97}'
+# → {"status": "success", "system_state": "THEFT_DETECTED"}
+```
+
+---
+
+### 5.10 Integration Gap: AI Engine → Backend
+
+**Current state**: The AI Engine (`main.py`) outputs telemetry to `stdout` as JSON lines. The backend exposes `POST /api/detect`. **These are not yet connected**.
+
+**The bridge needed**: A small script (or modification to `main.py`) that POSTs each JSON frame to the backend:
+
+```python
+# Add to ai-engine/main.py after formatting system_payload
+import requests
+try:
+    requests.post("http://localhost:5000/api/detect", json=system_payload, timeout=0.1)
+except:
+    pass  # Don't let backend failure stop the AI engine
+```
+
+This is the primary integration task remaining.
 
 ---
 
@@ -665,9 +943,14 @@ npm run dev    # Starts at http://localhost:8080
 
 | Feature | Status |
 |---|---|
-| Backend WebSocket bridge | ❌ Not started |
-| Real-time data in dashboard (currently mock data) | ❌ Not connected |
-| Database persistence of alerts | ❌ Not started |
+| Flask REST API server | ✅ Done — `backend/app.py` runs on port 5000 |
+| Supabase `logs` table persistence | ✅ Done — `database/db.py` |
+| Supabase `customers` table with dwell-time tracking | ✅ Done — `database/db.py` |
+| Decision Engine with 5-event priority chain | ✅ Done — `services/decision_engine.py` |
+| IoT hardware alert trigger (ESP8266) | ✅ Done — `services/alert_service.py` |
+| REST API endpoints (`/api/detect`, `/api/status`, `/api/logs`, `/api/customers`) | ✅ Done — `routes/` |
+| **AI Engine → Backend bridge (HTTP POST per frame)** | ❌ Not yet connected — needs `requests.post()` added to `main.py` |
+| Real-time data in dashboard (currently mock data) | ❌ Not connected — frontend needs to poll `/api/status`, `/api/logs`, `/api/customers` |
 | Re-ID across multiple cameras | ⚠️ `multi_camera.py` exists but not integrated |
 | POS/ERP API integration | ❌ Not started |
 | Demographics estimation (age/gender) | ❌ Not started |
