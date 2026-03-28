@@ -1,256 +1,397 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  BarChart, Bar, Legend,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
+  AreaChart, Area
 } from "recharts";
-import { Users, Clock, Zap, TrendingUp, BarChart3, ChevronRight } from "lucide-react";
-import { useDashboardStore } from "@/store/dashboardStore";
-import {
-  AnimatedCard,
-  CardBody,
-  CardDescription,
-  CardTitle,
-  CardVisual,
-  Visual1
-} from "@/components/ui/animated-card";
+import { Users, Clock, Activity, LogOut, Verified } from "lucide-react";
+import { BaseCard, KpiCard } from "./components/DashboardUI";
 
-const containerVar = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.1 } },
-};
-const itemVar = {
-  hidden: { opacity: 0, y: 20 },
-  visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 350, damping: 30 } },
+// ─── Types ───────────────────────────────────────────────────────────────────
+interface TrackingLog {
+  customer_id: string;
+  first_seen: string;
+  last_seen: string;
+  status: "ACTIVE" | "EXITED";
+  dwell_time: number; // in seconds
+}
+
+interface AnalyticsResponse {
+  total_unique_visitors: number;
+  current_active_count: number;
+  tracking_logs: TrackingLog[];
+}
+
+// ─── Mocks (Offline Fallbacks) ───────────────────────────────────────────────
+const MOCK_DATA: AnalyticsResponse = {
+  total_unique_visitors: 142,
+  current_active_count: 6,
+  tracking_logs: [
+    { customer_id: "89-X", first_seen: new Date(Date.now() - 1000 * 60 * 12).toISOString(), last_seen: new Date().toISOString(), status: "ACTIVE", dwell_time: 720 },
+    { customer_id: "88-Y", first_seen: new Date(Date.now() - 1000 * 60 * 25).toISOString(), last_seen: new Date().toISOString(), status: "ACTIVE", dwell_time: 1500 },
+    { customer_id: "87-Z", first_seen: new Date(Date.now() - 1000 * 60 * 45).toISOString(), last_seen: new Date(Date.now() - 1000 * 60 * 5).toISOString(), status: "EXITED", dwell_time: 2400 },
+    { customer_id: "86-W", first_seen: new Date(Date.now() - 1000 * 60 * 120).toISOString(), last_seen: new Date(Date.now() - 1000 * 60 * 80).toISOString(), status: "EXITED", dwell_time: 2400 },
+  ],
 };
 
-const GlowTooltip = ({ active, payload, label }: any) => {
+// ─── Custom Tooltip ────────────────────────────────────────────────────────
+const ChartTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
   return (
-    <div className="bg-[#11141a] border border-[#2d3440] px-3 py-2 rounded text-xs font-mono shadow-xl shadow-black/50">
-      <p className="text-[#8c9baf] mb-1">{label}</p>
-      {payload.map((p: any) => (
-        <p key={p.name} style={{ color: p.color }}>
-          {p.name}: <span className="font-bold text-white">{p.value}</span>
-        </p>
-      ))}
+    <div className="chart-tooltip">
+      <span style={{ color: "var(--text-muted)" }}>{label}</span>
+      <span className="value" style={{ color: "var(--accent)" }}>
+        {payload[0].value} {payload[0].name === "Dwell Time" ? "min" : ""}
+      </span>
     </div>
   );
 };
 
+// ─── Main Component ──────────────────────────────────────────────────────────
 export default function CustomerAnalytics() {
-  const [timeView, setTimeView] = useState<"today" | "week">("today");
-  const { footfallHourly, footfallWeekly, heatmapZones, demographics, dwellByZone } = useDashboardStore();
+  const [data, setData] = useState<AnalyticsResponse | null>(null);
+  const [isOffline, setIsOffline] = useState(false);
 
-  const trendData = timeView === "today" ? footfallHourly : footfallWeekly;
-  const xAxisKey = timeView === "today" ? "hour" : "day";
+  useEffect(() => {
+    let mounted = true;
+    const pollAnalytics = async () => {
+      try {
+        const res = await fetch("http://localhost:5050/api/customers", { signal: AbortSignal.timeout(2000) });
+        if (res.ok && mounted) {
+          const json = await res.json();
+          setData(json);
+          setIsOffline(false);
+        } else {
+          throw new Error("Bad response");
+        }
+      } catch (e) {
+        if (mounted) setIsOffline(true);
+      }
+    };
+    pollAnalytics();
+    const interval = setInterval(pollAnalytics, 10000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
+
+  const activeData = (isOffline && !data) ? MOCK_DATA : (data || MOCK_DATA);
+  const { total_unique_visitors, current_active_count, tracking_logs } = activeData;
+
+  // ─── Data Derivations ──────────────────────────────────────────────────────
+  const avgDwellSeconds = useMemo(() => {
+    if (tracking_logs.length === 0) return 0;
+    const total = tracking_logs.reduce((sum, log) => sum + log.dwell_time, 0);
+    return Math.round(total / tracking_logs.length);
+  }, [tracking_logs]);
+
+  const avgDwellMinutes = Math.round(avgDwellSeconds / 60);
+
+  const barChartData = useMemo(() => {
+    return tracking_logs.slice(0, 20).map(log => ({
+      name: `C-${log.customer_id}`,
+      dwellMin: Number((log.dwell_time / 60).toFixed(1))
+    }));
+  }, [tracking_logs]);
+
+  const sessionTimelineData = useMemo(() => {
+    const counts = Array.from({ length: 24 }).map((_, i) => ({
+      hour: `${i.toString().padStart(2, '0')}:00`,
+      visitors: 0
+    }));
+    
+    tracking_logs.forEach(log => {
+      const h = new Date(log.first_seen).getHours();
+      if (!isNaN(h)) counts[h].visitors++;
+    });
+
+    const currentHour = new Date().getHours();
+    const startIdx = 6;
+    const endIdx = Math.max(currentHour + 1, startIdx + 6);
+    return counts.slice(startIdx, endIdx);
+  }, [tracking_logs]);
+
+  const peakStatus = current_active_count > 5 ? "Active" : "Quiet";
+
+  // Mock Mix values
+  const staffCount = 4;
+  const mixTotal = activeData.current_active_count + staffCount;
+  const staffPercent = mixTotal > 0 ? (staffCount / mixTotal) * 100 : 0;
+  const custPercent = mixTotal > 0 ? (activeData.current_active_count / mixTotal) * 100 : 0;
 
   return (
-    <motion.div variants={containerVar} initial="hidden" animate="visible" className="w-full h-full flex flex-col gap-6">
+    <div className="dashboard-grid min-h-screen">
       
-      {/* ─── Header ─── */}
-      <div className="flex items-end justify-between border-b border-[#2d3440] pb-4 flex-shrink-0">
+      {/* ── HEADER ───────────────────────────────────────────────────────────── */}
+      <div className="col-12 flex justify-between items-end mb-2">
         <div>
-          <h1 className="text-3xl font-black font-display tracking-wide text-white flex items-center gap-3">
-            CUSTOMER ANALYTICS
-          </h1>
-          <p className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-[0.2em] mt-1.5 flex items-center gap-2">
-            BEHAVIORAL MAPPING <span className="w-1 h-1 rounded-full bg-[#a855f7]" /> FOOTFALL TRENDS
-          </p>
+          <h1 className="text-3xl font-black text-[var(--text-primary)] font-jakarta tracking-tight">Customer Analytics</h1>
+          <p className="text-[var(--text-muted)] mt-1 font-semibold text-sm">Real-time footfall dynamics and spatial dwell-time analysis</p>
         </div>
+        {isOffline && (
+          <div className="text-xs px-3 py-1.5 rounded-lg border border-[var(--accent)] font-bold bg-[color-mix(in_srgb,var(--accent)_20%,transparent)] text-[var(--accent)] font-jetbrains">
+            OFFLINE MOCK DATA
+          </div>
+        )}
       </div>
 
-      {/* ─── Section 1: KPI Cards ─── */}
-      <div className="grid grid-cols-3 gap-5">
-        <motion.div variants={itemVar} className="tactical-panel rounded-xl p-5 border border-[#2d3440] flex flex-col gap-2 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-[#00F0FF]/5 rounded-bl-[100px] -z-10 group-hover:bg-[#00F0FF]/10 transition-colors" />
-          <div className="flex justify-between items-start">
-            <p className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-widest">Total Footfall</p>
-            <Users className="w-4 h-4 text-[#00F0FF]" />
-          </div>
-          <div className="flex items-end gap-3 mt-1">
-            <span className="text-4xl font-black font-display">3,847</span>
-            <span className="text-[11px] font-mono text-[#10b981] flex items-center mb-1.5">
-              <TrendingUp className="w-3 h-3 mr-1" /> +12%
-            </span>
-          </div>
-        </motion.div>
+      {/* ── KPI CARDS ────────────────────────────────────────────────────────── */}
+      <KpiCard
+        className="col-3"
+        delay={0.1}
+        title="Visitors Today"
+        value={total_unique_visitors}
+        icon={Users}
+        trendUp={true}
+        trendValue="High Volume"
+      />
+      <KpiCard
+        className="col-3"
+        delay={0.15}
+        title="Currently Inside"
+        value={current_active_count}
+        trendValue="Live tracks"
+        icon={Activity}
+        accent={true}
+      />
+      <KpiCard
+        className="col-3"
+        delay={0.2}
+        title="Avg Dwell Time"
+        value={`${avgDwellMinutes}m`}
+        trendValue="Customer engagement"
+        trendUp={avgDwellMinutes > 15}
+        icon={Clock}
+      />
+      <KpiCard
+        className="col-3"
+        delay={0.25}
+        title="Peak Status"
+        value={peakStatus}
+        trendValue={peakStatus === "Active" ? "High Density" : "Nominal"}
+        trendUp={peakStatus === "Active"}
+        icon={peakStatus === "Active" ? Activity : LogOut}
+      />
 
-        <motion.div variants={itemVar} className="tactical-panel rounded-xl p-5 border border-[#2d3440] flex flex-col gap-2 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-[#FF003C]/5 rounded-bl-[100px] -z-10 group-hover:bg-[#FF003C]/10 transition-colors" />
-          <div className="flex justify-between items-start">
-            <p className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-widest">Peak Hour</p>
-            <Zap className="w-4 h-4 text-[#FF003C]" />
-          </div>
-          <div className="flex items-end gap-3 mt-1">
-            <span className="text-4xl font-black font-display">7:00 PM</span>
-            <span className="text-[11px] font-mono text-[#8c9baf] mb-1.5 whitespace-nowrap">741 visitors</span>
-          </div>
-        </motion.div>
-
-        <motion.div variants={itemVar} className="tactical-panel rounded-xl p-5 border border-[#2d3440] flex flex-col gap-2 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-[#a855f7]/5 rounded-bl-[100px] -z-10 group-hover:bg-[#a855f7]/10 transition-colors" />
-          <div className="flex justify-between items-start">
-            <p className="text-[10px] font-mono text-[#8c9baf] uppercase tracking-widest">Avg Dwell Time</p>
-            <Clock className="w-4 h-4 text-[#a855f7]" />
-          </div>
-          <div className="flex items-end gap-3 mt-1">
-            <span className="text-4xl font-black font-display">8.4</span>
-            <span className="text-[11px] font-mono text-[#8c9baf] mb-1.5">minutes</span>
-          </div>
-        </motion.div>
-      </div>
-
-      {/* ─── Section 2: Footfall Chart / Zone Heatmap ─── */}
-      <div className="grid grid-cols-2 gap-5 min-h-[320px]">
-        {/* Left: Chart */}
-        <motion.div variants={itemVar} className="tactical-panel rounded-xl border border-[#2d3440] p-5 flex flex-col">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-[11px] font-mono text-[#8c9baf] uppercase tracking-widest flex items-center gap-2">
-              <BarChart3 className="w-3.5 h-3.5" /> Visitor Footfall
-            </h3>
-            <div className="flex bg-[#11141a] border border-[#2d3440] rounded-lg p-1">
-              <button 
-                onClick={() => setTimeView("today")}
-                className={`py-1 px-3 rounded-md text-[10px] font-mono font-bold uppercase transition-all ${timeView === "today" ? "bg-[#00F0FF] text-black" : "text-[#8c9baf] hover:text-white"}`}>
-                Today
-              </button>
-              <button 
-                onClick={() => setTimeView("week")}
-                className={`py-1 px-3 rounded-md text-[10px] font-mono font-bold uppercase transition-all ${timeView === "week" ? "bg-[#00F0FF] text-black" : "text-[#8c9baf] hover:text-white"}`}>
-                7 Days
-              </button>
-            </div>
-          </div>
-          <div className="flex-1 min-h-0 relative -ml-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={trendData}>
-                <defs>
-                  <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#00F0FF" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#00F0FF" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2d3440" />
-                <XAxis dataKey={xAxisKey} axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: "#8c9baf", fontFamily: "monospace" }} dy={10} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: "#8c9baf", fontFamily: "monospace" }} />
-                <Tooltip content={<GlowTooltip />} cursor={{ fill: "rgba(0,240,255,0.05)" }} />
-                <Area type="monotone" dataKey="count" name="Visitors" stroke="#00F0FF" strokeWidth={2} fillOpacity={1} fill="url(#colorCount)" animated />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </motion.div>
-
-        {/* Right: Heatmap */}
-        <motion.div variants={itemVar} className="tactical-panel rounded-xl border border-[#2d3440] p-5 flex flex-col">
-          <h3 className="text-[11px] font-mono text-[#8c9baf] uppercase tracking-widest flex items-center gap-2 mb-6">
-            <ChevronRight className="w-3.5 h-3.5 text-[#FF003C]" /> Zone Intensity Map
-          </h3>
-          <div className="flex-1 grid grid-cols-4 grid-rows-3 gap-2">
-            {heatmapZones.map((z) => {
-              // Interpolate color from low (cool) to high (hot)
-              const hue = Math.max(0, 220 - (z.intensity * 2.2)); // 220 is blue, 0 is red
-              const intensityColor = `hsl(${hue}, 80%, 50%)`;
-              return (
-                <div key={z.zone} 
-                  className="rounded-md relative overflow-hidden border border-white/5 group flex flex-col items-center justify-center gap-1 transition-all hover:scale-[1.03] cursor-crosshair"
-                  style={{ backgroundColor: `hsla(${hue}, 80%, 30%, 0.15)` }}>
-                  
-                  {/* Background Fill scaled by intensity */}
-                  <div className="absolute inset-0 opacity-20 group-hover:opacity-40 transition-opacity" style={{ backgroundColor: intensityColor }} />
-                  <div className="absolute bottom-0 left-0 w-full bg-gradient-to-t from-black/50 to-transparent h-1/2" />
-                  
-                  <span className="relative z-10 text-[9px] font-mono text-center px-1 text-[#8c9baf] leading-tight uppercase font-bold group-hover:text-white selection:bg-transparent">
-                    {z.zone}
-                  </span>
-                  <span className="relative z-10 text-lg font-black font-display text-white selection:bg-transparent" style={{ textShadow: `0 0 10px ${intensityColor}` }}>
-                    {z.intensity}%
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </motion.div>
-      </div>
-
-      {/* ─── Section 3: Demographics / Dwell Time ─── */}
-      <div className="grid grid-cols-2 gap-5 min-h-[250px] flex-1 pb-5">
-        {/* Left: Demographics */}
-        <motion.div variants={itemVar} className="tactical-panel rounded-xl border border-[#2d3440] p-5 flex flex-col">
-          <h3 className="text-[11px] font-mono text-[#8c9baf] uppercase tracking-widest flex items-center gap-2 mb-6">
-            <Users className="w-3.5 h-3.5 text-[#a855f7]" /> Demographics Split
-          </h3>
-          <div className="flex-1 -ml-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={demographics}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2d3440" />
-                <XAxis dataKey="group" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: "#8c9baf", fontFamily: "monospace" }} dy={10} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: "#8c9baf", fontFamily: "monospace" }} />
-                <Tooltip cursor={{ fill: "rgba(255,255,255,0.03)" }} content={<GlowTooltip />} />
-                <Legend iconType="circle" wrapperStyle={{ fontSize: "10px", fontFamily: "monospace", color: "#8c9baf" }} />
-                <Bar dataKey="male" name="Male" fill="#00F0FF" radius={[2, 2, 0, 0]} barSize={20} />
-                <Bar dataKey="female" name="Female" fill="#a855f7" radius={[2, 2, 0, 0]} barSize={20} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </motion.div>
-
-        {/* Right: Dwell Time */}
-        <motion.div variants={itemVar} className="tactical-panel rounded-xl border border-[#2d3440] p-5 overflow-hidden flex flex-col">
-          <h3 className="text-[11px] font-mono text-[#8c9baf] uppercase tracking-widest flex items-center gap-2 mb-5">
-            <Clock className="w-3.5 h-3.5 text-[#f59e0b]" /> Avg Dwell by Zone
-          </h3>
-          <div className="flex-1 flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar">
-            {dwellByZone.sort((a,b) => b.avgMin - a.avgMin).map((z) => {
-              const maxDwell = 15; // normalize against 15 min max
-              const width = `${Math.min(100, (z.avgMin / maxDwell) * 100)}%`;
-              return (
-                <div key={z.zone} className="flex items-center gap-4 group">
-                  <div className="w-24 text-[10px] font-mono text-[#8c9baf] uppercase truncate group-hover:text-white transition-colors">
-                    {z.zone}
-                  </div>
-                  <div className="flex-[3] h-2 bg-[#11141a] rounded-full overflow-hidden relative">
-                    <motion.div 
-                      initial={{ width: 0 }}
-                      animate={{ width }}
-                      transition={{ duration: 1, type: "spring" }}
-                      className="absolute left-0 top-0 h-full bg-gradient-to-r from-[#f59e0b]/40 to-[#f59e0b]" 
-                    />
-                  </div>
-                  <div className="w-16 text-right text-[11px] font-mono font-bold text-white">
-                    {z.avgMin} <span className="text-[#8c9baf] text-[9px]">min</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </motion.div>
-      </div>
-
-      {/* ─── Section 4: Live Telemetry Card (Animated) ─── */}
-      <motion.div variants={itemVar} className="flex gap-5 border-t border-[#2d3440] pt-6 pb-2 mt-2">
-        <div className="flex flex-col gap-2 max-w-sm">
-          <h3 className="text-sm font-mono font-bold text-white uppercase tracking-widest flex items-center gap-2">
-            <Zap className="w-4 h-4 text-[#00F0FF]" /> AI Telemetry Stream
-          </h3>
-          <p className="text-[11px] font-mono text-[#8c9baf]">
-            Live visualizations piped directly from the YOLOv8n hardware cluster, showing background data ingestion loops and model inferences on raw camera streams.
-          </p>
+      {/* ── ROW: LOGS & DWELL TIME ───────────────────────────────────────────── */}
+      <BaseCard className="col-4 flex flex-col p-0 min-h-[450px]">
+        <div className="card-header px-6 pt-5 pb-3 border-b border-[var(--border)] m-0 flex-shrink-0">
+          <span className="card-title text-[var(--text-primary)]">Live Visitors</span>
         </div>
         
-        <AnimatedCard className="bg-[#0a0c10] border-[#2d3440] shadow-xl shadow-black">
-          <CardVisual>
-            <Visual1 mainColor="#00F0FF" secondaryColor="#a855f7" gridColor="rgba(255,255,255,0.03)" />
-          </CardVisual>
-          <CardBody className="border-[#2d3440] bg-[#11141a]">
-            <CardTitle className="text-white text-sm font-mono uppercase tracking-wider">Vision Model Active</CardTitle>
-            <CardDescription className="text-[#8c9baf] text-[11px] font-mono">
-              Processing 24 nodes simultaneously at 30 inferences/sec.
-            </CardDescription>
-          </CardBody>
-        </AnimatedCard>
-      </motion.div>
+        <div className="flex-1 p-4 overflow-y-auto">
+          {tracking_logs.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center p-8 text-center" style={{ color: "var(--text-muted)" }}>
+              <LogOut size={32} className="mb-3 opacity-50" />
+              <p className="text-sm font-semibold">No active tracking sessions</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <AnimatePresence>
+                {tracking_logs.slice(0, 10).map((log, i) => {
+                  const isActive = log.status === "ACTIVE";
+                  const dwellMin = Math.round(log.dwell_time / 60);
+                  
+                  return (
+                    <motion.div
+                      key={log.customer_id}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ delay: i * 0.05 }}
+                      className="p-3 rounded-xl flex items-center gap-4 bg-[var(--bg-base)] border border-[var(--border)]"
+                    >
+                      <div className={`w-10 h-10 rounded-full flex flex-col items-center justify-center text-[0.6rem] font-bold font-jetbrains border ${isActive ? 'bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--accent)] border-[var(--accent)]' : 'bg-[color-mix(in_srgb,var(--text-muted)_10%,transparent)] text-[var(--text-muted)] border-[var(--border)]'}`}>
+                        C-{log.customer_id.substring(0, 2)}
+                      </div>
+                      
+                      <div className="flex flex-col flex-1">
+                        <span className="text-[0.55rem] font-jetbrains font-black text-[var(--accent)] opacity-40 uppercase tracking-widest mb-1">
+                          [CID:TRAK-{log.customer_id}]
+                        </span>
+                        <span className="font-bold text-sm text-[var(--text-primary)]">
+                          Customer Tracking Session
+                        </span>
+                        <span className="text-[0.65rem] text-[var(--text-muted)] font-medium">
+                          Duration: {dwellMin} min
+                        </span>
+                      </div>
 
-    </motion.div>
+                      <div className={`px-2.5 py-1 rounded-full text-[0.6rem] font-bold uppercase tracking-wider border ${isActive ? 'text-black bg-[var(--accent)] border-transparent' : 'text-[var(--text-subtle)] bg-[var(--bg-card)] border-[var(--border)]'}`}>
+                        {isActive ? "Inside" : "Exited"}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            </div>
+          )}
+        </div>
+      </BaseCard>
+
+      <BaseCard className="col-8 flex flex-col">
+        <div className="flex items-center justify-between mb-4 flex-shrink-0">
+          <div className="flex flex-col">
+            <span className="card-title text-[var(--text-primary)]">Dwell Time Distribution</span>
+            <span className="text-[0.7rem] text-[var(--text-muted)] mt-1">Cross-sectional analysis of customer retention.</span>
+          </div>
+          <span className="text-[0.65rem] px-2 py-1 rounded bg-[color-mix(in_srgb,var(--accent)_20%,transparent)] text-[var(--accent)] font-jetbrains font-bold">AVG: {avgDwellMinutes}m</span>
+        </div>
+        
+        <div className="relative w-full p-2 overflow-hidden" style={{ height: 240 }}>
+          {/* Subtle vertical guide lines */}
+          <div className="absolute inset-x-0 top-0 bottom-4 pointer-events-none opacity-[0.03] z-0" 
+               style={{ background: 'repeating-linear-gradient(90deg, var(--text-muted), var(--text-muted) 1px, transparent 1px, transparent 60px)' }} />
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={barChartData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+              <defs>
+                <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--accent)" stopOpacity={1} />
+                  <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.25} />
+                </linearGradient>
+              </defs>
+              <XAxis 
+                dataKey="name" 
+                axisLine={false} 
+                tickLine={false}
+                tick={{ fill: 'var(--text-muted)', fontSize: 11, fontFamily: "'JetBrains Mono'" }}
+                dy={10}
+              />
+              <YAxis 
+                axisLine={false} 
+                tickLine={false}
+                tick={{ fill: 'var(--text-muted)', fontSize: 10, fontFamily: "'JetBrains Mono'" }}
+              />
+              <Tooltip cursor={{ fill: "rgba(255,255,255,0.03)" }} content={<ChartTooltip />} />
+              <ReferenceLine 
+                y={avgDwellMinutes} 
+                stroke="var(--text-muted)" 
+                strokeDasharray="3 3"
+                strokeOpacity={0.4}
+                label={{ position: 'insideTopRight', value: 'AVG DWELL', fill: "var(--text-muted)", fontSize: 9, fontFamily: "'JetBrains Mono'", opacity: 0.5 }} 
+              />
+              <Bar 
+                dataKey="dwellMin" 
+                name="Dwell Time"
+                fill="url(#barGradient)" 
+                radius={[4, 4, 0, 0]} 
+                animationDuration={1200}
+                barSize={36}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+      </BaseCard>
+
+      {/* ── ROW 3 ────────────────────────────────────────────────────────────── */}
+      <BaseCard className="col-4 flex flex-col justify-center items-center py-8">
+        <span className="card-title text-[var(--text-primary)] w-full text-left mb-6">Staff vs Customer Mix</span>
+        
+        <div className="relative w-48 h-48 flex items-center justify-center">
+          {/* SVG Donut Gauge */}
+          <svg className="w-full h-full transform -rotate-90">
+            {/* Background track */}
+            <circle 
+              cx="96" cy="96" r="80" 
+              stroke="var(--bg-base)" 
+              strokeWidth="16" 
+              fill="none" 
+            />
+            
+            {/* Staff Segment */}
+            <circle 
+              cx="96" cy="96" r="80" 
+              stroke="var(--positive)" 
+              strokeWidth="16" 
+              fill="none" 
+              strokeDasharray={`${staffPercent * 5.02} 502`} // 2 * pi * 80 ~= 502
+              strokeLinecap="round"
+              className="drop-shadow-[0_0_8px_var(--positive)]"
+            />
+            
+            {/* Customer Segment */}
+            <circle 
+              cx="96" cy="96" r="80" 
+              stroke="var(--accent)" 
+              strokeWidth="16" 
+              fill="none" 
+              strokeDasharray={`${custPercent * 5.02} 502`} 
+              strokeDashoffset={`-${staffPercent * 5.02}`} 
+              strokeLinecap="round"
+              className="drop-shadow-[0_0_8px_var(--accent)]"
+            />
+          </svg>
+          
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
+            <span className="text-3xl font-black font-jetbrains text-[var(--text-primary)]">{mixTotal}</span>
+            <span className="text-xs text-[var(--text-muted)] uppercase tracking-widest font-bold">Total Ppl</span>
+          </div>
+        </div>
+
+        <div className="flex gap-6 mt-6 w-full justify-center">
+          <div className="flex flex-col items-center gap-1">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-[var(--positive)]" />
+              <span className="text-xs text-[var(--text-muted)] font-bold uppercase">Staff</span>
+            </div>
+            <span className="text-lg font-jetbrains font-bold text-[var(--text-primary)]">{staffCount}</span>
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-[var(--accent)]" />
+              <span className="text-xs text-[var(--text-muted)] font-bold uppercase">Customers</span>
+            </div>
+            <span className="text-lg font-jetbrains font-bold text-[var(--text-primary)]">{current_active_count}</span>
+          </div>
+        </div>
+      </BaseCard>
+
+      <BaseCard className="col-8 flex flex-col">
+        <div className="flex items-center justify-between mb-4 flex-shrink-0">
+          <div className="flex flex-col">
+            <span className="card-title text-[var(--text-primary)]">Session Timeline</span>
+            <span className="text-[0.7rem] text-[var(--text-muted)] mt-1">Hourly unique visitor aggregation</span>
+          </div>
+        </div>
+        
+        <div className="w-full relative p-2 overflow-hidden" style={{ height: 240 }}>
+          {/* Scanline Backdrop */}
+          <div className="absolute inset-0 pointer-events-none opacity-[0.02] z-0" 
+               style={{ background: 'repeating-linear-gradient(0deg, var(--text-muted), var(--text-muted) 1px, transparent 1px, transparent 4px)' }} />
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={sessionTimelineData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+              <defs>
+                <linearGradient id="colorVisAccent" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.4}/>
+                  <stop offset="95%" stopColor="var(--accent)" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <XAxis 
+                dataKey="hour" 
+                axisLine={false} 
+                tickLine={false} 
+                dy={10}
+              />
+              <YAxis 
+                axisLine={false} 
+                tickLine={false} 
+                allowDecimals={false}
+              />
+              <Tooltip content={<ChartTooltip />} cursor={{ stroke: "rgba(255,255,255,0.05)" }} />
+              <Area 
+                type="monotone" 
+                dataKey="visitors" 
+                name="Visitors"
+                stroke="var(--accent)" 
+                strokeWidth={3}
+                fill="url(#colorVisAccent)" 
+                activeDot={{ r: 6, fill: "var(--bg-card)", strokeWidth: 2, stroke: "var(--accent)" }}
+                animationDuration={2000}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </BaseCard>
+
+    </div>
   );
 }

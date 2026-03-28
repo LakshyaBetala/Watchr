@@ -1,4 +1,13 @@
-@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Chakra+Petch:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+/* Dashboard utility classes */
+.font-jakarta { font-family: 'Plus Jakarta Sans', sans-serif; }
+.font-jetbrains { font-family: 'JetBrains Mono', monospace; }
+
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.5; }
+}
 
 @tailwind base;
 @tailwind components;
@@ -6,40 +15,57 @@
 
 @layer base {
   :root {
-    --bg-tactical: #0a0c10;
-    --panel-tactical: #11141a;
-    --border-tactical: #2d3440;
-    --text-primary: #e2e8f0;
-    --text-secondary: #8c9baf;
-    --accent-blue: #00F0FF;
-    --accent-blue-glow: rgba(0, 240, 255, 0.3);
+    /* SKILL.md Dashboard UI Style */
+    --bg-base:       #151515;
+    --bg-card:       #1e1e1e;
+    --bg-card-hover: #252525;
+    --border:        rgba(255,255,255,0.07);
+    --text-primary:  #f0f0f0;
+    --text-muted:    #6b6b6b;
+    --text-subtle:   #3f3f3f;
+
+    /* Theme Accent (Neon Lime) */
+    --accent:        #c6f135;
+    --accent-dim:    color-mix(in srgb, var(--accent) 15%, transparent);
+    
+    /* Status Colors */
+    --positive:      #4ade80;
+    --negative:      #f87171;
+
+    /* Legacy Map/Fallback Variables (kept to avoid breaking during migration) */
+    --bg-tactical: #151515;
+    --panel-tactical: #1e1e1e;
+    --border-tactical: rgba(255,255,255,0.07);
+    --text-secondary: #6b6b6b;
+    --accent-blue: #4DA6FF;
+    --accent-blue-glow: rgba(77, 166, 255, 0.3);
     --accent-orange: #f97316;
-    --accent-green: #10b981;
-    --accent-red: #ef4444;
+    --accent-green: #00E87A;
+    --accent-red: #FF3B55;
   }
 
   body {
-    background-color: var(--bg-tactical);
+    background-color: var(--bg-base);
     color: var(--text-primary);
-    font-family: 'IBM Plex Sans', sans-serif;
+    font-family: 'Plus Jakarta Sans', sans-serif;
     -webkit-font-smoothing: antialiased;
     letter-spacing: 0.01em;
   }
 
-  /* Custom Scrollbar for tactical feel */
+  /* Custom Scrollbar */
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 4px;
+    height: 4px;
   }
   ::-webkit-scrollbar-track {
-    background: var(--bg-tactical);
-    border-left: 1px solid var(--border-tactical);
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--border-tactical);
+    background: var(--border);
+    border-radius: 99px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--text-secondary);
+    background: var(--text-subtle);
   }
 }
 
@@ -47,104 +73,212 @@
   .font-display {
     font-family: 'Chakra Petch', sans-serif;
   }
-
-  /* Tactical Panel: Sharp edges, top-left chamfer via clip-path, heavy inset border feeling */
-  .premium-card, .tactical-panel {
-    background-color: var(--panel-tactical);
-    border: 1px solid var(--border-tactical);
-    position: relative;
-    /* subtle CRT scan grid over panels */
-    background-image: linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px);
-    background-size: 100% 4px;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .tactical-panel:hover {
-    border-color: #4b5563;
-  }
-
-  /* For highly interactive raw buttons */
-  .tactical-btn {
-    background: transparent;
-    border: 1px solid var(--border-tactical);
-    color: var(--text-secondary);
-    font-family: 'Chakra Petch', sans-serif;
-    text-transform: uppercase;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    padding: 6px 16px;
-    position: relative;
-    overflow: hidden;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .tactical-btn:hover {
-    background: var(--text-primary);
-    color: var(--bg-tactical);
-    border-color: var(--text-primary);
-  }
-  
-  .tactical-btn.active {
-    background: var(--accent-blue);
-    color: #fff;
-    border-color: var(--accent-blue);
-  }
-
-  /* Corner brackets decorative element */
-  .bracket-box {
-    position: relative;
-  }
-  .bracket-box::before, .bracket-box::after {
-    content: '';
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    border: 1px solid var(--text-secondary);
-    pointer-events: none;
-  }
-  .bracket-box::before {
-    top: -1px; left: -1px;
-    border-right: none;
-    border-bottom: none;
-  }
-  .bracket-box::after {
-    bottom: -1px; right: -1px;
-    border-left: none;
-    border-top: none;
-  }
-
-  .bg-grid {
-    background-size: 40px 40px;
-    background-image: 
-      linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  }
-
-  .text-glow {
-    text-shadow: 0 0 10px var(--accent-blue-glow);
-  }
-
-  .scanline {
-    width: 100%;
-    height: 100px;
-    z-index: 5;
-    background: linear-gradient(0deg, rgba(0, 0, 0, 0) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(0, 0, 0, 0) 100%);
-    position: absolute;
-    top: -100px;
-    left: 0;
-    pointer-events: none;
-    animation: scanline 8s linear infinite;
-  }
-
-  @keyframes scanline {
-    0% { top: -100px; }
-    100% { top: 100%; }
-  }
 }
 
-/* Radar Sweep Animation */
+/* ──────────────────────────────────────────────────────────────────────────── */
+/* DASHBOARD UI STYLE CLASSES (from SKILL.md)                                   */
+/* ──────────────────────────────────────────────────────────────────────────── */
+
+.kpi-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: clamp(2rem, 4vw, 3.5rem);
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+.card-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.trend {
+  font-size: 0.72rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.trend--up   { color: var(--positive); }
+.trend--down { color: var(--negative); }
+
+.trend-badge {
+  background: rgba(0,0,0,0.15);
+  border-radius: 99px;
+  padding: 2px 8px;
+}
+
+body-sm {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px 24px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.card:hover {
+  background: var(--bg-card-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+}
+
+.card--accent {
+  background: var(--accent);
+  color: #000;
+}
+.card--accent:hover {
+  box-shadow: 0 0 32px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent-dim);
+  display: grid;
+  place-items: center;
+  font-size: 0.875rem;
+  color: var(--accent);
+}
+
+.card-action {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  transition: all 0.15s;
+}
+.card-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chart-tooltip {
+  position: absolute;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  pointer-events: none;
+}
+.chart-tooltip .value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: block;
+}
+
+/* Recharts styling overrides */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: var(--border);
+  stroke-dasharray: 4 4;
+}
+.recharts-text {
+  fill: var(--text-muted) !important;
+  font-size: 11px;
+}
+
+.bar--striped {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--accent) 0,
+    var(--accent) 2px,
+    transparent 0,
+    transparent 50%
+  );
+  background-size: 8px 8px;
+  background-color: var(--accent-dim);
+}
+
+.nav-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  padding: 4px;
+}
+
+.nav-item {
+  padding: 6px 16px;
+  border-radius: 99px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.nav-item:hover { color: var(--text-primary); }
+.nav-item--active {
+  background: var(--accent);
+  color: #000;
+  font-weight: 600;
+}
+
+.live-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--positive);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Dashboard grid system */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: minmax(0, auto);
+  gap: 24px;
+  padding: 24px 32px 64px 32px;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.col-2  { grid-column: span 2; }
+.col-3  { grid-column: span 3; }
+.col-4  { grid-column: span 4; }
+.col-6  { grid-column: span 6; }
+.col-8  { grid-column: span 8; }
+.col-9  { grid-column: span 9; }
+.col-10 { grid-column: span 10; }
+.col-12 { grid-column: span 12; }
+
+@media (max-width: 1024px) {
+  .col-3, .col-4 { grid-column: span 6; }
+  .col-8 { grid-column: span 12; }
+}
+
+/* Radar Sweep Animation (Legacy preserved) */
 @keyframes sweep {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
