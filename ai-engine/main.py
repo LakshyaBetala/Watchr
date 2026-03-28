@@ -1,7 +1,9 @@
+import os
 import cv2
 import json
 import logging
 import time
+import datetime
 import numpy as np
 from collections import Counter
 import requests
@@ -14,6 +16,7 @@ from zone_mapping import ZoneMapper, visualize_zones
 from theft_detection import TheftDetectionEngine
 from fire_detection import FireDetector
 from auto_calibrator import ProductionCalibrator
+from identity_manager import IdentityManager
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -124,6 +127,38 @@ def dispatch_to_backend(payload):
         requests.post("http://localhost:5050/api/detect", json=mapped_payload, timeout=0.5)
     except requests.exceptions.RequestException:
         pass
+    
+    # Also dispatch to Supabase
+    threading.Thread(target=dispatch_to_supabase, args=(mapped_payload,), daemon=True).start()
+
+SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://jqybouilcscdjouueaum.supabase.co')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpxeWJvdWlsY3NjZGpvdXVlYXVtIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NDYwODE4NCwiZXhwIjoyMDkwMTg0MTg0fQ.UKx3PzJwHQ_oChm3LAnAxAVfAfzvQmUUq2ToMx8UCaE')
+
+def dispatch_to_supabase(payload):
+    """Fire-and-forget HTTP POST to Supabase."""
+    event_type = "engine_telemetry"
+    if payload.get("fire") or payload.get("smoke"):
+        event_type = "fire_alert"
+    elif payload.get("theft"):
+        event_type = "theft_alert"
+        
+    supabase_payload = {
+        "event": event_type,
+        "details": payload,
+        "time": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }
+    
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+    
+    try:
+        requests.post(f"{SUPABASE_URL}/rest/v1/logs", headers=headers, json=supabase_payload, timeout=1.0)
+    except Exception:
+        pass
 
 
 def main():
@@ -187,6 +222,8 @@ def main():
             confidence_threshold=0.50
         )
         fire_engine = FireDetector(confidence_threshold=0.55)
+        # ReID & Uniform Manager
+        identity_manager = IdentityManager(staff_color="black")
         
         logger.info(f"Detection backend: {detector.backend}")
         logger.info(f"Tracker mode: {tracker_mode}")
@@ -289,6 +326,12 @@ def main():
             display_frame = mosaic.copy()
             frame = mosaic
             
+            # ── 3.5 IDENTITY MANAGER (ReID & STAFF UNIFORMS) ─────────
+            # Replaces per-camera IDs (c0_5, c1_3) with persistent Global IDs
+            # Extracts Torso signatures and identifies STAFF uniforms (e.g. black)
+            track_output = identity_manager.process_tracking(frame, track_output)
+            staff_overrides = track_output.get("staff_overrides", {})
+            
             # ── 4. ZONE MAPPING ──────────────────────────────────────
             try:
                 zones_output = zone_mapper.map_zones(track_output.get("objects", {}))
@@ -302,7 +345,8 @@ def main():
                 theft_output = theft_engine.detect_theft(
                     zones_output, 
                     track_output.get("objects", {}),
-                    per_person_confidence=track_output.get("per_person_confidence", {})
+                    per_person_confidence=track_output.get("per_person_confidence", {}),
+                    staff_overrides=staff_overrides
                 )
                 
                 # Start evidence recording if theft detected
