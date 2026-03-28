@@ -54,7 +54,10 @@ export default function BehavioralStatePathVisualizer() {
   ];
 
   return (
-    <div className="w-full mb-8 pt-4">
+    <div className="w-full mt-4">
+      {/* Top divider */}
+      <div className="w-full h-px bg-[var(--border)] mb-8 opacity-50" />
+
       {/* CSS keyframes */}
       <style>{`
         @keyframes borderPulse {
@@ -172,9 +175,6 @@ export default function BehavioralStatePathVisualizer() {
           );
         })}
       </div>
-
-      {/* Bottom divider */}
-      <div className="w-full h-px bg-[var(--border)] mt-8 mb-4 opacity-50" />
     </div>
   );
 }

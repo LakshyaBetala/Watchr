@@ -103,10 +103,7 @@ export default function ThreatMonitor() {
 
   return (
     <div className="dashboard-grid min-h-screen">
-      <div className="col-12">
-        <BehavioralStatePathVisualizer />
-      </div>
-
+      
       {/* ── BANNER ───────────────────────────────────────────────────────────── */}
       <motion.div
         initial={{ opacity: 0, y: -12 }}
@@ -271,7 +268,9 @@ export default function ThreatMonitor() {
         </div>
       </BaseCard>
 
-
+      <div className="col-12 mb-8">
+        <BehavioralStatePathVisualizer />
+      </div>
 
     </div>
   );
