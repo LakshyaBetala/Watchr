@@ -116,7 +116,7 @@ class MultiCameraManager:
             frame_list = [f for (_, f) in raw]
         
         frames = []
-        for i in range(max(len(frame_list), self.num_cams)):
+        for i in range(self.num_cams):
             if i < len(frame_list) and frame_list[i] is not None:
                 frame = frame_list[i].copy()
                 status = self.threads[i].status if i < len(self.threads) else "unknown"
@@ -130,11 +130,19 @@ class MultiCameraManager:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             frames.append(frame)
         
-        while len(frames) < 4: frames.append(np.zeros((480, 640, 3), dtype=np.uint8))
-        
-        top_row = cv2.hconcat([frames[0], frames[1]])
-        bot_row = cv2.hconcat([frames[2], frames[3]])
-        return True, cv2.vconcat([top_row, bot_row])
+        if self.num_cams == 1:
+            return True, frames[0]
+        elif self.num_cams == 2:
+            return True, cv2.hconcat([frames[0], frames[1]])
+        elif self.num_cams == 3:
+            frames.append(np.zeros((480, 640, 3), dtype=np.uint8))
+            top_row = cv2.hconcat([frames[0], frames[1]])
+            bot_row = cv2.hconcat([frames[2], frames[3]])
+            return True, cv2.vconcat([top_row, bot_row])
+        else:
+            top_row = cv2.hconcat([frames[0], frames[1]])
+            bot_row = cv2.hconcat([frames[2], frames[3]])
+            return True, cv2.vconcat([top_row, bot_row])
     
     def get_panorama(self): return self.get_mosaic()
     def get_health_report(self): return [t.get_health() for t in self.threads]

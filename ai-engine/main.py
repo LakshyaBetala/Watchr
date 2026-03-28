@@ -13,6 +13,7 @@ from tracking import CentroidTracker, YOLOTracker, visualize_tracking
 from zone_mapping import ZoneMapper, visualize_zones
 from theft_detection import TheftDetectionEngine
 from fire_detection import FireDetector
+from auto_calibrator import ProductionCalibrator
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -85,6 +86,21 @@ def main():
             src = input(f"Camera {i+1} URL (blank=Webcam): ").strip()
             sources.append(src)
         
+        # ── ZONE CALIBRATION ──
+        calibrate = input("[CONFIG] Calibrate zones? (y/N): ").strip().lower()
+        if calibrate == 'y':
+            print("\n🎯 Launching Precision Zone Calibrator...")
+            print("   [B] = Billing  |  [1][2][3] = Shelves  |  [E] = Exit")
+            print("   Click and drag to draw zone boundaries, then accept/redo.")
+            print("   Press [S] to save & continue to engine.\n")
+            cal = ProductionCalibrator()
+            cal.cam_manager = MultiCameraManager(sources)
+            cal.run_smart_menu()
+            cal.cam_manager.release()
+            cv2.destroyAllWindows()
+            print("✅ Zones calibrated. Starting engine...\n")
+            time.sleep(1)
+        
         # ── FPS GOVERNOR ──
         max_fps_input = input("[CONFIG] Max FPS (Default=30, set lower if GPU overheats): ").strip()
         max_fps = int(max_fps_input) if max_fps_input.isdigit() else 30
@@ -111,7 +127,7 @@ def main():
             confidence_drop_threshold=0.20,
             confidence_threshold=0.50
         )
-        fire_engine = FireDetector(confidence_threshold=0.45)
+        fire_engine = FireDetector(confidence_threshold=0.75)
         
         logger.info(f"Detection backend: {detector.backend}")
         logger.info(f"Tracker mode: {tracker_mode}")
@@ -236,12 +252,16 @@ def main():
                 logger.error(f"Theft engine failed: {e}")
                 theft_output = {"theft": False, "suspects": [], "roles": {}, "suspect_details": []}
 
-            # ── 6. FIRE & SMOKE DETECTION ────────────────────────────
-            try:
-                fire_output = fire_engine.detect_fire(frame, prev_frame)
-            except Exception as e:
-                logger.error(f"Fire detection failed: {e}")
-                fire_output = {"fire": False, "smoke": False, "confidence": 0.0}
+            # ── 6. FIRE & SMOKE DETECTION (skip every 5th frame for perf) ──
+            if frame_number % 5 == 0:
+                try:
+                    fire_output = fire_engine.detect_fire(frame, prev_frame)
+                except Exception as e:
+                    logger.error(f"Fire detection failed: {e}")
+                    fire_output = {"fire": False, "smoke": False, "confidence": 0.0}
+            else:
+                if 'fire_output' not in locals():
+                    fire_output = {"fire": False, "smoke": False, "confidence": 0.0}
 
             prev_frame = frame.copy()
 
@@ -321,7 +341,18 @@ def main():
                 
                 # Analytics Panel
                 fw = display_frame.shape[1]
-                panel_w, panel_h = 300, 250
+                
+                # Auto Layout Scaling
+                if fw <= 640:
+                    panel_w, panel_h = 240, 180
+                    scale, y_step = 0.35, 14
+                elif fw <= 1280:
+                    panel_w, panel_h = 280, 220
+                    scale, y_step = 0.40, 18
+                else:
+                    panel_w, panel_h = 300, 250
+                    scale, y_step = 0.45, 20
+                
                 px1, py1 = fw - panel_w - 10, 10
                 px2, py2 = fw - 10, py1 + panel_h
                 
@@ -333,31 +364,31 @@ def main():
                 fps = 1.0 / (loop_start - fps_counter) if (loop_start - fps_counter) > 0 else 0
                 fps_counter = loop_start
                 
-                cv2.putText(display_frame, f"WATCHR v3.0 [{detector.backend.upper()}]", (px1+10, py1+22),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
-                cv2.putText(display_frame, f"FPS: {fps:.0f} | Track: {tracker_mode} | Fire: {fire_engine.backend}", 
-                            (px1+10, py1+42), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150,150,150), 1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"WATCHR v3.0 [{detector.backend.upper()}]", (px1+10, py1+(y_step+2)),
+                            cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 255, 255), 1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"FPS: {fps:.0f} | Fire: {fire_engine.backend}", 
+                            (px1+10, py1+(y_step*2)+2), cv2.FONT_HERSHEY_SIMPLEX, scale-0.1, (150,150,150), 1, cv2.LINE_AA)
                 
                 total = system_payload.get("people_count", 0)
                 staff_count = list(roles_dict.values()).count("STAFF")
                 cust_count = list(roles_dict.values()).count("CUSTOMER")
                 suspect_count = list(roles_dict.values()).count("SUSPECT")
                 
-                y_off = py1 + 65
-                cv2.putText(display_frame, f"Total: {total}", (px1+10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1)
-                cv2.putText(display_frame, f"Staff: {staff_count}", (px1+10, y_off+20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,150,100), 1)
-                cv2.putText(display_frame, f"Customers: {cust_count}", (px1+10, y_off+40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,255,200), 1)
+                y_off = py1 + (y_step*3) + 5
+                cv2.putText(display_frame, f"Total: {total}", (px1+10, y_off), cv2.FONT_HERSHEY_SIMPLEX, scale, (255,255,255), 1)
+                cv2.putText(display_frame, f"Staff: {staff_count}", (px1+10, y_off+y_step), cv2.FONT_HERSHEY_SIMPLEX, scale, (255,150,100), 1)
+                cv2.putText(display_frame, f"Customers: {cust_count}", (px1+10, y_off+(y_step*2)), cv2.FONT_HERSHEY_SIMPLEX, scale, (0,255,200), 1)
                 if suspect_count > 0:
-                    cv2.putText(display_frame, f"SUSPECTS: {suspect_count}", (px1+10, y_off+60), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,0,255), 2)
+                    cv2.putText(display_frame, f"SUSPECTS: {suspect_count}", (px1+10, y_off+(y_step*3)), cv2.FONT_HERSHEY_SIMPLEX, scale, (0,0,255), 2)
                 
                 # Zone bars
-                y_off += 85
+                y_off += (y_step*4)
                 for zname, zcount in zone_counts.items():
                     if zname == "unknown": continue
-                    bar = min(zcount * 30, panel_w - 100)
-                    cv2.rectangle(display_frame, (px1+80, y_off-10), (px1+80+bar, y_off), (0,200,200), -1)
-                    cv2.putText(display_frame, f"{zname}: {zcount}", (px1+10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200,200,200), 1)
-                    y_off += 18
+                    bar = min(zcount * 25, panel_w - 90)
+                    cv2.rectangle(display_frame, (px1+70, y_off-10), (px1+70+bar, y_off), (0,200,200), -1)
+                    cv2.putText(display_frame, f"{zname[:7]}: {zcount}", (px1+10, y_off), cv2.FONT_HERSHEY_SIMPLEX, scale-0.05, (200,200,200), 1)
+                    y_off += y_step
                 
                 # Camera health
                 y_off += 5

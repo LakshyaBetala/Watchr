@@ -36,33 +36,35 @@ class FireDetector:
         - should_alert() method for backend integration
     """
     
-    def __init__(self, confidence_threshold=0.50, temporal_window=10, temporal_min=4,
+    def __init__(self, confidence_threshold=0.65, temporal_window=15, temporal_min=8,
                  fire_model_path="fire_yolov8n.pt"):
         
         # ===== FLAME COLOR BOUNDS =====
-        self.flame_lower = np.array([0, 100, 200], dtype=np.uint8)
-        self.flame_upper = np.array([35, 255, 255], dtype=np.uint8)
+        self.flame_lower = np.array([0, 130, 200], dtype=np.uint8)
+        self.flame_upper = np.array([28, 255, 255], dtype=np.uint8)
         
         # ===== SMOKE COLOR BOUNDS (Gray/White haze with low saturation) =====
-        self.smoke_lower = np.array([0, 0, 150], dtype=np.uint8)
-        self.smoke_upper = np.array([180, 60, 255], dtype=np.uint8)
+        self.smoke_lower = np.array([0, 0, 160], dtype=np.uint8)
+        self.smoke_upper = np.array([180, 35, 255], dtype=np.uint8)
         
         # ===== THRESHOLDS =====
         self.confidence_threshold = confidence_threshold
-        self.smoke_area_threshold = 8000
-        self.flame_area_threshold = 3000
-        self.edge_chaos_threshold = 0.4
-        self.brightness_threshold = 240
-        self.bloom_area_threshold = 2000
+        self.smoke_area_threshold = 15000    # Haze detection lowered
+        self.flame_area_threshold = 300      # TINY fires allowed (sparks/lighters)
+        self.edge_chaos_threshold = 0.30     # Chaos on small scales
+        self.brightness_threshold = 240      # Near-white overexposure only
+        self.bloom_area_threshold = 100      # 100px bloom for early warning
         
         # ===== LAYER WEIGHTS =====
-        self.W_FLAME_COLOR = 0.20
-        self.W_FLICKER = 0.15
-        self.W_SMOKE = 0.20
-        self.W_EDGE_CHAOS = 0.10
-        self.W_HEATMAP = 0.15
+        # Heavily prioritize dynamic attributes (Flicker, Chaos, Plasma Gradient) 
+        self.W_FLAME_COLOR = 0.15
+        self.W_FLICKER = 0.20
+        self.W_SMOKE = 0.15
+        self.W_EDGE_CHAOS = 0.15
+        self.W_PLASMA = 0.15      # New: Requires multi-temperature gradients
+        self.W_HEATMAP = 0.05
         self.W_BLOOM = 0.10
-        self.W_TEMPORAL = 0.10
+        self.W_TEMPORAL = 0.05
         
         # ===== SPATIAL HEATMAP =====
         self.heatmap = None
@@ -217,8 +219,8 @@ class FireDetector:
             flicker_mask = cv2.bitwise_and(flame_mask, motion_mask)
             flicker_pixels = cv2.countNonZero(flicker_mask)
             
-            if flicker_pixels > 1000:
-                confidence += self.W_FLICKER * min(flicker_pixels / 5000.0, 1.0)
+            if flicker_pixels > 100:
+                confidence += self.W_FLICKER * min(flicker_pixels / 800.0, 1.0)
             
             # =============================================
             # LAYER 3: SMOKE DETECTION (EARLY WARNING)
@@ -233,14 +235,14 @@ class FireDetector:
             smoke_motion = cv2.bitwise_and(smoke_binary, motion_mask)
             smoke_motion_pixels = cv2.countNonZero(smoke_motion)
             
-            if smoke_pixels > self.smoke_area_threshold and smoke_motion_pixels > 500:
+            if smoke_pixels > self.smoke_area_threshold and smoke_motion_pixels > 3000:
                 smoke_score = min(smoke_pixels / (self.smoke_area_threshold * 4), 1.0)
                 confidence += self.W_SMOKE * smoke_score
                 self.smoke_history.append(True)
             else:
                 self.smoke_history.append(False)
             
-            if sum(self.smoke_history) >= 5:
+            if sum(self.smoke_history) >= 8:
                 self.smoke_confirmed = True
             else:
                 self.smoke_confirmed = False
@@ -248,6 +250,7 @@ class FireDetector:
             # =============================================
             # LAYER 4: EDGE TURBULENCE (Fractal Chaos)
             # =============================================
+            edge_density = 0.0
             if flame_pixels > self.flame_area_threshold:
                 flame_region = cv2.bitwise_and(gray, gray, mask=flame_mask)
                 edges = cv2.Canny(flame_region, 50, 150)
@@ -274,8 +277,8 @@ class FireDetector:
             stable_core = stable_core.astype(np.uint8)
             stable_pixels = cv2.countNonZero(stable_core)
             
-            if stable_pixels > 500:
-                confidence += self.W_HEATMAP * min(stable_pixels / 5000.0, 1.0)
+            if stable_pixels > 100:
+                confidence += self.W_HEATMAP * min(stable_pixels / 1000.0, 1.0)
             
             # =============================================
             # LAYER 6: BRIGHTNESS BLOOM (Overexposure)
@@ -288,8 +291,30 @@ class FireDetector:
                 confidence += self.W_BLOOM * min(bloom_pixels / (self.bloom_area_threshold * 3), 1.0)
             
             # =============================================
-            # LAYER 7: TEMPORAL CONSENSUS
+            # LAYER 8: THERMODYNAMIC PLASMA VARIANCE (The Silver Bullet)
             # =============================================
+            # Real fire spans temperatures (red->orange->yellow->white core). 
+            # Fake fires (shirts, neon signs, traffic cones) are monochromatic.
+            hue_std = 0.0
+            if flame_pixels > self.flame_area_threshold:
+                h_channel = hsv[:,:,0]
+                pixels = h_channel[flame_mask > 0]
+                if len(pixels) > 50:
+                    hue_std = np.std(pixels)
+                    if hue_std > 3.5:
+                        # Massive reward for gradient plasma 
+                        confidence += self.W_PLASMA * min((hue_std - 3.5) / 10.0, 1.0)
+                    else:
+                        # SEVERE PENALTY: Monochromatic objects (like a safety vest) lose confidence rapidly
+                        confidence -= 0.25
+            
+            # =============================================
+            # LAYER 9: TEMPORAL CONSENSUS & SYNERGY
+            # =============================================
+            # Synergy Boost: If localized area is chaotic, heavily flickering, AND has plasma gradient.
+            if flame_pixels > self.flame_area_threshold and flicker_pixels > 200 and edge_density > 0.25 and hue_std > 4.0:
+                confidence += 0.35  # Fatal proof of real fire
+                
             self.history.append(confidence)
             
             high_conf_frames = sum(1 for c in self.history if c > 0.30)
