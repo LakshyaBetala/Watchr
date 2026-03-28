@@ -145,6 +145,7 @@ def main():
         
         # ── ZONE CALIBRATION ──
         calibrate = input("[CONFIG] Calibrate zones? (y/N): ").strip().lower()
+        cam_manager = None
         if calibrate == 'y':
             print("\n🎯 Launching Precision Zone Calibrator...")
             print("   [B] = Billing  |  [1][2][3] = Shelves  |  [E] = Exit")
@@ -153,17 +154,18 @@ def main():
             cal = ProductionCalibrator()
             cal.cam_manager = MultiCameraManager(sources)
             cal.run_smart_menu()
-            cal.cam_manager.release()
-            cv2.destroyAllWindows()
+            # Reuse calibrator's live camera connection (avoids FFmpeg crash on reconnect)
+            cam_manager = cal.cam_manager
             print("✅ Zones calibrated. Starting engine...\n")
             time.sleep(1)
         
-        # ── FPS GOVERNOR ──
-        max_fps_input = input("[CONFIG] Max FPS (Default=30, set lower if GPU overheats): ").strip()
-        max_fps = int(max_fps_input) if max_fps_input.isdigit() else 30
+        # ── FPS GOVERNOR (30 FPS default) ──
+        max_fps = 30
         min_loop_time = 1.0 / max_fps
-            
-        cam_manager = MultiCameraManager(sources)
+        
+        # Only create new camera manager if calibration was skipped
+        if cam_manager is None:
+            cam_manager = MultiCameraManager(sources)
         
         # Init detection engine (auto-selects ONNX or Ultralytics)
         detector = PersonDetector(model_name="yolov8n.pt", conf_thresh=0.5)
@@ -184,7 +186,7 @@ def main():
             confidence_drop_threshold=0.20,
             confidence_threshold=0.50
         )
-        fire_engine = FireDetector(confidence_threshold=0.45)
+        fire_engine = FireDetector(confidence_threshold=0.55)
         
         logger.info(f"Detection backend: {detector.backend}")
         logger.info(f"Tracker mode: {tracker_mode}")
@@ -503,8 +505,8 @@ def main():
                 if system_payload.get("smoke") or system_payload.get("fire"):
                     if fire_duration_start is None:
                         fire_duration_start = time.time()
-                    elif time.time() - fire_duration_start > 5.0:
-                        if time.time() - fire_last_spoke > 30:
+                    elif time.time() - fire_duration_start > 2.75:
+                        if time.time() - fire_last_spoke > 20:
                             txt = "Warning. Fire danger detected. Please evacuate."
                             play_audio_then_speak("fire_audio.mp3", 3, txt)
                             fire_last_spoke = time.time()

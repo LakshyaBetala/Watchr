@@ -206,7 +206,8 @@ class ProductionCalibrator:
             elif key == ord('s') or key == ord('S') or key == 27:
                 break
                 
-        self.cam_manager.release()
+        # Don't release cam_manager here — let main.py reuse the live connection
+        # to avoid FFmpeg stream assertion crashes on DroidCam reconnect.
         cv2.destroyAllWindows()
         
         if self.computed_zones:
