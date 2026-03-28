@@ -7,6 +7,7 @@ from routes.detect import detect_bp
 from routes.status import status_bp
 from routes.logs import logs_bp
 from routes.customers import customers_bp
+from routes.analytics import analytics_bp
 
 def create_app():
     app = Flask(__name__)
@@ -19,6 +20,7 @@ def create_app():
     app.register_blueprint(status_bp, url_prefix='/api')
     app.register_blueprint(logs_bp, url_prefix='/api')
     app.register_blueprint(customers_bp, url_prefix='/api')
+    app.register_blueprint(analytics_bp, url_prefix='/api')
     
     @app.errorhandler(404)
     def resource_not_found(e):

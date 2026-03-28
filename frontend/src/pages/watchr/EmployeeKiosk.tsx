@@ -302,7 +302,7 @@ export default function EmployeeKiosk() {
                   <XAxis dataKey="hour" tick={{ fontSize: 7, fill: "#8c9baf", fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 7, fill: "#8c9baf", fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} />
                   <Tooltip content={<GlowTooltip />} />
-                  <Bar dataKey="count" fill="#00F0FF" fillOpacity={0.75} radius={[2, 2, 0, 0]} name="Staff" />
+                  <Bar dataKey="staff" fill="#00F0FF" fillOpacity={0.75} radius={[2, 2, 0, 0]} name="Staff" />
                 </BarChart>
               </ResponsiveContainer>
             </motion.div>

@@ -1,5 +1,8 @@
 import { create } from 'zustand';
 // Completely purged watchrMockData to ensure 100% organic live metrics.
+
+const API_BASE = "http://localhost:5050/api";
+
 interface DashboardStore {
   selectedStore: string;
   setSelectedStore: (id: string) => void;
@@ -20,7 +23,7 @@ interface DashboardStore {
   signalStrengths: any[];
   heatmapZoneCells: any[];
 
-  // ANALYTICS & KIOSK STATE
+  // ANALYTICS & KIOSK STATE (Gemini-powered)
   footfallHourly: any[];
   footfallWeekly: any[];
   heatmapZones: any[];
@@ -30,6 +33,7 @@ interface DashboardStore {
   faceLogData: any[];
   shiftActivity: any[];
   allAlerts: any[];
+  storeNarrative: string;
   
   // SETTINGS
   orgData: any;
@@ -40,9 +44,10 @@ interface DashboardStore {
   // ACTIONS
   connectTelemetryStream: () => void;
   connectInsightsStream: () => void;
+  bootstrapAnalytics: () => void;
 }
 
-export const useDashboardStore = create<DashboardStore>((set) => ({
+export const useDashboardStore = create<DashboardStore>((set, get) => ({
   selectedStore: 'all',
   setSelectedStore: (id) => set({ selectedStore: id }),
 
@@ -73,6 +78,7 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
   faceLogData: [],
   shiftActivity: [],
   allAlerts: [],
+  storeNarrative: "",
   orgData: { name: "Live Organization", id: "ORG-001", status: "Active" },
   storesData: [],
   camerasData: [],
@@ -83,10 +89,11 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
     if ((window as any)._sseConnected) return;
     (window as any)._sseConnected = true;
     
-    // Boot up the secondary Gemini insight stream
+    // Boot up the secondary Gemini insight stream + bootstrap REST snapshot
     get().connectInsightsStream();
+    get().bootstrapAnalytics();
     
-    const eventSource = new EventSource("http://localhost:5050/api/stream");
+    const eventSource = new EventSource(`${API_BASE}/stream`);
     
     eventSource.onmessage = (event) => {
       try {
@@ -200,21 +207,80 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
     if ((window as any)._insightsConnected) return;
     (window as any)._insightsConnected = true;
     
-    const eventSource = new EventSource("http://localhost:5050/api/insights/stream");
+    const eventSource = new EventSource(`${API_BASE}/insights/stream`);
     
     eventSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
         
-        set((state) => ({
-          employees: payload.employees || state.employees,
-          demographics: payload.demographics || state.demographics,
-          // Merge generative alerts with system alerts, keeping the newest 50
-          allAlerts: payload.allAlerts ? [...payload.allAlerts, ...state.allAlerts].slice(0, 50) : state.allAlerts
-        }));
+        set((state) => {
+          // Merge Gemini-generated alerts with live system alerts, newest 50
+          const mergedAlerts = payload.allAlerts
+            ? [...payload.allAlerts, ...state.allAlerts].slice(0, 50)
+            : state.allAlerts;
+
+          // Patch KPI cards from Gemini kpiSummary if available
+          let newKpi = [...state.kpiData];
+          if (payload.kpiSummary) {
+            const k = payload.kpiSummary;
+            newKpi[0] = { ...newKpi[0], value: k.footfallToday ?? newKpi[0].value };
+            newKpi[1] = { ...newKpi[1], value: String(k.activeThreatCount ?? newKpi[1].value) };
+            newKpi[3] = { ...newKpi[3], value: k.avgDwellMin ? `${k.avgDwellMin}m` : newKpi[3].value };
+          }
+
+          return {
+            employees:      payload.employees      ?? state.employees,
+            shiftActivity:  payload.shiftActivity  ?? state.shiftActivity,
+            demographics:   payload.demographics   ?? state.demographics,
+            footfallHourly: payload.footfallHourly ?? state.footfallHourly,
+            heatmapZones:   payload.heatmapZones   ?? state.heatmapZones,
+            dwellByZone:    payload.dwellByZone     ?? state.dwellByZone,
+            storesData:     payload.storesData      ?? state.storesData,
+            camerasData:    payload.camerasData     ?? state.camerasData,
+            storeNarrative: payload.storeNarrative  ?? state.storeNarrative,
+            allAlerts: mergedAlerts,
+            kpiData: newKpi,
+          };
+        });
       } catch (err) {
         console.error("Insights SSE Parse Error", err);
       }
     };
-  }
+  },
+
+  bootstrapAnalytics: async () => {
+    // Pre-populate all charts immediately from the last cached Gemini snapshot
+    // so users don't see empty charts during the first 20-second SSE wait.
+    try {
+      const res  = await fetch(`${API_BASE}/analytics`);
+      const data = await res.json();
+      if (data.status === "pending") return; // No data yet, charts stay empty
+
+      set((state) => {
+        let newKpi = [...state.kpiData];
+        if (data.kpiSummary) {
+          const k = data.kpiSummary;
+          newKpi[0] = { ...newKpi[0], value: k.footfallToday ?? newKpi[0].value };
+          newKpi[1] = { ...newKpi[1], value: String(k.activeThreatCount ?? newKpi[1].value) };
+          newKpi[3] = { ...newKpi[3], value: k.avgDwellMin ? `${k.avgDwellMin}m` : newKpi[3].value };
+        }
+        return {
+          employees:      data.employees      || state.employees,
+          shiftActivity:  data.shiftActivity  || state.shiftActivity,
+          demographics:   data.demographics   || state.demographics,
+          footfallHourly: data.footfallHourly || state.footfallHourly,
+          heatmapZones:   data.heatmapZones   || state.heatmapZones,
+          dwellByZone:    data.dwellByZone     || state.dwellByZone,
+          storesData:     data.storesData      || state.storesData,
+          camerasData:    data.camerasData     || state.camerasData,
+          storeNarrative: data.storeNarrative  || state.storeNarrative,
+          allAlerts:      data.allAlerts       ? [...data.allAlerts, ...state.allAlerts].slice(0, 50) : state.allAlerts,
+          kpiData: newKpi,
+        };
+      });
+      console.log("✅ Watchr: Analytics bootstrapped from /api/analytics");
+    } catch (err) {
+      console.warn("Could not bootstrap analytics snapshot:", err);
+    }
+  },
 }));
