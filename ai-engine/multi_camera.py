@@ -49,47 +49,69 @@ class CameraThread:
 
 class MultiCameraManager:
     """
-    Hardware-accelerated multiplexer fusing up to 4 IP feeds into a single master canvas (2x2 grid).
-    Now fully multi-threaded for asynchronous networking!
+    Phase 1: Multi-threaded camera manager with decoupled inference and display.
+    
+    get_individual_frames() → Raw per-camera frames for batched YOLO inference.
+    get_mosaic(frames) → Takes pre-fetched frames, stitches 2x2 grid for DISPLAY ONLY.
+    get_panorama() → Legacy: fetches + stitches in one call (backward compatible).
     """
     def __init__(self, sources):
         self.threads = []
+        self.num_cams = len(sources)
         for i, src in enumerate(sources):
-            # Mount thread
             cam_thread = CameraThread(src, i+1)
             self.threads.append(cam_thread)
             
-        # Global warm-up delay to allow network sockets to buffer into RAM safely
+        # Warm-up delay for network sockets
         time.sleep(1.5)
-            
-    def get_panorama(self):
-        """Reads instantly from background memory buffers to construct the real-time mosaic."""
-        frames = []
-        for i, t in enumerate(self.threads):
+    
+    def get_individual_frames(self):
+        """
+        Returns a list of (ret, raw_frame) tuples — one per camera.
+        NO stitching, NO text overlay. Pure unmodified frames for inference.
+        """
+        results = []
+        for t in self.threads:
             ret, frame = t.read()
-            if not ret or frame is None:
-                # Provide a dead-feed fallback slate if a camera drops offline
-                frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                txt = f"CAM {i+1} SIGNAL LOST"
-                cv2.putText(frame, txt, (150, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-            else:
-                # Constrain dynamically to 640x480 scale natively
+            if ret and frame is not None:
                 frame = cv2.resize(frame, (640, 480))
-                cv2.putText(frame, f"CAM {i+1}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                            
+            results.append((ret, frame))
+        return results
+    
+    def get_mosaic(self, frame_list=None):
+        """
+        Takes a list of frames (from get_individual_frames) and stitches into
+        a 2x2 grid for DISPLAY ONLY. If frame_list is None, fetches fresh frames.
+        """
+        if frame_list is None:
+            raw = self.get_individual_frames()
+            frame_list = [f if f is not None else None for (_, f) in raw]
+        
+        frames = []
+        for i in range(max(len(frame_list), self.num_cams)):
+            if i < len(frame_list) and frame_list[i] is not None:
+                frame = frame_list[i].copy()
+                cv2.putText(frame, f"CAM {i+1}", (20, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            else:
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(frame, f"CAM {i+1} OFFLINE", (150, 240),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
             frames.append(frame)
-            
-        # Pad dynamically to ensure mathematical 2x2 grid (4 matrices)
+        
+        # Pad to 4 for 2x2 grid
         while len(frames) < 4:
-            blank = np.zeros((480, 640, 3), dtype=np.uint8)
-            frames.append(blank)
-            
-        # Fast GPU-accelerated concatenation bindings
+            frames.append(np.zeros((480, 640, 3), dtype=np.uint8))
+        
         top_row = cv2.hconcat([frames[0], frames[1]])
         bot_row = cv2.hconcat([frames[2], frames[3]])
-        master_grid = cv2.vconcat([top_row, bot_row])
+        mosaic = cv2.vconcat([top_row, bot_row])
         
-        return True, master_grid
+        return True, mosaic
+    
+    def get_panorama(self):
+        """Legacy backward-compatible method. Fetches + stitches."""
+        return self.get_mosaic()
         
     def release(self):
         for t in self.threads:

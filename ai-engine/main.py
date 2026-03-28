@@ -1,6 +1,7 @@
 import cv2
 import json
 import logging
+import time
 import numpy as np
 from collections import Counter
 
@@ -11,14 +12,23 @@ from zone_mapping import ZoneMapper, visualize_zones
 from theft_detection import TheftDetectionEngine
 from fire_detection import FireDetector
 
-# Configure minimal, clean logging focused strictly on JSON layout for the terminal integration
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
+# ─── Camera Grid Coordinate Offsets ───────────────────────────────────
+# Each camera occupies a 640x480 tile in the 2x2 mosaic:
+#   CAM 1: (0,0)      CAM 2: (640,0)
+#   CAM 3: (0,480)    CAM 4: (640,480)
+GRID_OFFSETS = [
+    (0, 0),        # CAM 1 top-left
+    (640, 0),      # CAM 2 top-right
+    (0, 480),      # CAM 3 bottom-left
+    (640, 480),    # CAM 4 bottom-right
+]
+
 def get_dominant_color(image, k=3):
-    """Dynamically extracts the uniform color signature of a suspect for Multi-Camera ReID."""
-    pixels = image.reshape((-1, 3))
-    pixels = np.float32(pixels)
+    """Extract dominant color for ReID."""
+    pixels = image.reshape((-1, 3)).astype(np.float32)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
     _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
     counts = Counter(labels.flatten())
@@ -26,96 +36,120 @@ def get_dominant_color(image, k=3):
     return [int(c) for c in dominant]
 
 def main():
-    logger.info("Starting Watchr AI Engine Integration...")
+    logger.info("Starting Watchr AI Engine...")
 
-    # --- 1. INITIALIZE MODULES (Fault Tolerant Start) ---
     try:
-        print("\n==========================================")
-        print(" WATCHR AI SURVEILLANCE ENGINE - CORE BOOT")
-        print("==========================================")
-        num_cams = input("[CONFIG] How many cameras to orchestrate? (1-4, Default=1): ").strip()
+        print("\n╔══════════════════════════════════════════════╗")
+        print("║  WATCHR AI ENGINE — BATCHED GPU INFERENCE    ║")
+        print("╚══════════════════════════════════════════════╝")
+        
+        num_cams = input("[CONFIG] Number of cameras (1-4, Default=1): ").strip()
         num_cams = int(num_cams) if num_cams.isdigit() else 1
         
         sources = []
         for i in range(num_cams):
-            src = input(f"URL for Camera {i+1} (Leave blank for Webcam 0): ").strip()
+            src = input(f"Camera {i+1} URL (blank=Webcam): ").strip()
             sources.append(src)
             
         cam_manager = MultiCameraManager(sources)
-
-        # Load isolated Intelligence Engines
+        
+        # Init modules — detection engine auto-selects ONNX or Ultralytics
         detector = PersonDetector(model_name="yolov8n.pt", conf_thresh=0.5)
         tracker = CentroidTracker(max_distance=50, max_missed=5)
-        zone_mapper = ZoneMapper()  # Evaluates physical mapping
+        zone_mapper = ZoneMapper()
         theft_engine = TheftDetectionEngine(shelf_dwell_threshold=3, theft_confirm_threshold=3)
         fire_engine = FireDetector(area_threshold=5000, buffer_size=5, min_trigger=3)
         
+        logger.info(f"Inference backend: {detector.backend}")
+        
     except Exception as e:
-        logger.error(f"CRITICAL MODULE FAILURE during initialization: {e}")
+        logger.error(f"INIT FAILED: {e}")
         return
-
-    logger.info("Pipeline Online. Processing Frames...")
 
     prev_frame = None
     camera_id = 1
     store_lockdown = False
     global_suspect_signatures = []
+    fps_counter = time.perf_counter()
 
-    # --- 2. THE CONTINUOUS INTELLIGENCE PIPELINE ---
+    # ─── MAIN LOOP ────────────────────────────────────────────────────
     while True:
         try:
-            # 2.1 Video Input (Mosaic Pipeline)
-            ret, frame = cam_manager.get_panorama()
-            if not ret or frame is None:
-                logger.warning("Master Mosaic stream gap detected.")
+            loop_start = time.perf_counter()
+            
+            # ── 1. FETCH INDIVIDUAL FRAMES (no stitching) ─────────────
+            raw_frames = cam_manager.get_individual_frames()
+            
+            # Extract valid frames for inference
+            valid_frames = []
+            valid_indices = []
+            for i, (ret, frame) in enumerate(raw_frames):
+                if ret and frame is not None:
+                    valid_frames.append(frame)
+                    valid_indices.append(i)
+            
+            if not valid_frames:
+                logger.warning("No camera feeds available.")
                 break
             
-            # Isolated rendering canvas
-            display_frame = frame.copy()
-            
-            # 🛡️ FAULT-TOLERANT EXECUTION BLOCKS (Isolation per module)
-            
-            # 2.2 Stable Detection Layer
+            # ── 2. BATCHED GPU INFERENCE (one call for all cameras) ───
             try:
-                det_output = detector.detect(frame)
-                raw_detections = det_output.get("detections", [])
+                batch_results = detector.detect_batch(valid_frames)
             except Exception as e:
-                logger.error(f"Detection engine dropped frame: {e}")
-                raw_detections = []
-
-            # 2.3 Centroid Tracking
+                logger.error(f"Batched detection failed: {e}")
+                batch_results = [{"people_count": 0, "detections": [], "stable": False}] * len(valid_frames)
+            
+            # ── 3. MERGE DETECTIONS WITH COORDINATE OFFSETS ───────────
+            # Map per-camera detections to mosaic coordinate space
+            merged_detections = []
+            for cam_idx, det_result in zip(valid_indices, batch_results):
+                ox, oy = GRID_OFFSETS[cam_idx] if cam_idx < len(GRID_OFFSETS) else (0, 0)
+                
+                for det in det_result.get("detections", []):
+                    x1, y1, x2, y2 = det[0], det[1], det[2], det[3]
+                    conf = det[4] if len(det) > 4 else 0.0
+                    # Offset to mosaic coordinate space
+                    merged_detections.append([x1 + ox, y1 + oy, x2 + ox, y2 + oy, conf])
+            
+            # ── 4. BUILD MOSAIC FOR DISPLAY (after inference) ─────────
+            display_frames = [f for f in valid_frames]
+            _, mosaic = cam_manager.get_mosaic(display_frames)
+            display_frame = mosaic.copy()
+            
+            # Use mosaic as the unified frame for fire detection
+            frame = mosaic
+            
+            # ── 5. TRACKING ──────────────────────────────────────────
             try:
-                track_output = tracker.track(raw_detections)
+                track_output = tracker.track(merged_detections)
             except Exception as e:
-                logger.error(f"Tracking linkage collapsed: {e}")
+                logger.error(f"Tracking failed: {e}")
                 track_output = {"people_count": 0, "ids": [], "objects": {}}
 
-            # 2.4 Semantic Zone Mapping
+            # ── 6. ZONE MAPPING ──────────────────────────────────────
             try:
                 zones_output = zone_mapper.map_zones(track_output.get("objects", {}))
             except Exception as e:
-                logger.error(f"Zone mapping failed to classify: {e}")
+                logger.error(f"Zone mapping failed: {e}")
                 zones_output = {"zones": {}}
 
-            # 2.5 Behavioral Theft State Machine (Now receives bbox data for concealment/velocity)
+            # ── 7. THEFT STATE MACHINE ───────────────────────────────
             try:
                 theft_output = theft_engine.detect_theft(zones_output, track_output.get("objects", {}))
             except Exception as e:
-                logger.error(f"Theft state machine stalled: {e}")
+                logger.error(f"Theft engine failed: {e}")
                 theft_output = {"theft": False, "suspects": [], "roles": {}}
 
-            # 2.6 Fire & Smoke Sentinel
+            # ── 8. FIRE & SMOKE SENTINEL ─────────────────────────────
             try:
                 fire_output = fire_engine.detect_fire(frame, prev_frame)
             except Exception as e:
-                logger.error(f"Life safety / Fire evaluation corrupted: {e}")
+                logger.error(f"Fire detection failed: {e}")
                 fire_output = {"fire": False, "smoke": False, "confidence": 0.0}
 
-            # Preserve frame strictly for next dynamic loop cycle calculation
             prev_frame = frame.copy()
 
-            # --- 3. FINAL JSON PAYLOAD AGGREGATION ---
-            # Contract: Guaranteed to remain valid JSON regardless of upstream chaos
+            # ── 9. JSON PAYLOAD ──────────────────────────────────────
             system_payload = {
                 "camera_id": camera_id,
                 "people_count": track_output.get("people_count", 0),
@@ -130,22 +164,20 @@ def main():
                 "fire_confidence": fire_output.get("confidence", 0.0)
             }
 
-            # Single unified broadcast point to stdout for backend/IoT consumption
             logger.info(json.dumps(system_payload))
 
-            # --- 4. PRODUCTION VISUALIZATION ENGINE ---
+            # ── 10. VISUALIZATION ────────────────────────────────────
             try:
-                # Render zone boundaries with transparent fills
                 display_frame = visualize_zones(display_frame, zone_mapper, track_output, zones_output)
                 roles_dict = system_payload.get("roles", {})
                 zones_map = zones_output.get("zones", {})
                 
-                # Per-zone occupancy counter
+                # Per-zone occupancy
                 zone_counts = {}
                 for oid, zname in zones_map.items():
                     zone_counts[zname] = zone_counts.get(zname, 0) + 1
                 
-                # === PER-PERSON OVERLAY: Role + Zone + Confidence ===
+                # Per-person labels
                 for obj_id_str, bbox in track_output.get("objects", {}).items():
                     if isinstance(bbox, list) and len(bbox) >= 4:
                         conf = float(bbox[4]) if len(bbox) >= 5 else 0.0
@@ -153,7 +185,6 @@ def main():
                         role = roles_dict.get(obj_id_str, "CUSTOMER")
                         zone = zones_map.get(obj_id_str, "unknown")
                         
-                        # Color coding by role
                         if role == "SUSPECT":
                             box_color = (0, 0, 255)
                             label_color = (0, 0, 255)
@@ -164,153 +195,128 @@ def main():
                             box_color = (0, 255, 200)
                             label_color = (0, 255, 200)
                         
-                        # Draw person bbox
                         cv2.rectangle(display_frame, (x1, y1), (x2, y2), box_color, 2)
                         
-                        # Label: ID + Role + Confidence Badge
-                        id_label = f"ID:{obj_id_str}"
-                        role_label = f"{role} [{conf*100:.0f}%]"
-                        zone_label = f"@ {zone.upper()}"
-                        
-                        # Background pill for label
                         cv2.rectangle(display_frame, (x1, y1 - 45), (x1 + 200, y1), (20, 20, 20), -1)
-                        cv2.putText(display_frame, id_label, (x1 + 3, y1 - 30),
+                        cv2.putText(display_frame, f"ID:{obj_id_str}", (x1 + 3, y1 - 30),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-                        cv2.putText(display_frame, role_label, (x1 + 3, y1 - 15),
+                        cv2.putText(display_frame, f"{role} [{conf*100:.0f}%]", (x1 + 3, y1 - 15),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, label_color, 1, cv2.LINE_AA)
-                        cv2.putText(display_frame, zone_label, (x1 + 3, y1 - 2),
+                        cv2.putText(display_frame, f"@ {zone.upper()}", (x1 + 3, y1 - 2),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
                 
-                # === ANALYTICS PANEL (Top-Right Corner) ===
-                panel_w, panel_h = 280, 200
+                # Analytics Panel (top-right)
                 fw = display_frame.shape[1]
+                panel_w, panel_h = 280, 220
                 px1, py1 = fw - panel_w - 10, 10
                 px2, py2 = fw - 10, py1 + panel_h
                 
-                # Semi-transparent panel
                 overlay = display_frame.copy()
                 cv2.rectangle(overlay, (px1, py1), (px2, py2), (15, 15, 15), -1)
                 display_frame = cv2.addWeighted(overlay, 0.75, display_frame, 0.25, 0)
                 cv2.rectangle(display_frame, (px1, py1), (px2, py2), (0, 255, 255), 1)
                 
-                # Title
-                cv2.putText(display_frame, "LIVE ANALYTICS", (px1 + 10, py1 + 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                # FPS
+                fps = 1.0 / (loop_start - fps_counter) if (loop_start - fps_counter) > 0 else 0
+                fps_counter = loop_start
                 
-                # People count
+                cv2.putText(display_frame, f"WATCHR [{detector.backend.upper()}]", (px1+10, py1+22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(display_frame, f"FPS: {fps:.0f}", (px1+10, py1+45),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+                
                 total = system_payload.get("people_count", 0)
                 staff_count = list(roles_dict.values()).count("STAFF")
                 cust_count = list(roles_dict.values()).count("CUSTOMER")
                 suspect_count = list(roles_dict.values()).count("SUSPECT")
                 
-                y_off = py1 + 55
-                cv2.putText(display_frame, f"Total: {total}", (px1 + 10, y_off),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-                cv2.putText(display_frame, f"Staff: {staff_count}", (px1 + 10, y_off + 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 100), 1, cv2.LINE_AA)
-                cv2.putText(display_frame, f"Customers: {cust_count}", (px1 + 10, y_off + 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 1, cv2.LINE_AA)
+                y_off = py1 + 70
+                cv2.putText(display_frame, f"Total: {total}", (px1+10, y_off),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"Staff: {staff_count}", (px1+10, y_off+22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,150,100), 1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"Customers: {cust_count}", (px1+10, y_off+44),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,200), 1, cv2.LINE_AA)
                 if suspect_count > 0:
-                    cv2.putText(display_frame, f"SUSPECTS: {suspect_count}", (px1 + 10, y_off + 75),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
+                    cv2.putText(display_frame, f"SUSPECTS: {suspect_count}", (px1+10, y_off+66),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2, cv2.LINE_AA)
                 
-                # Per-zone occupancy bars
-                y_off += 100
-                cv2.putText(display_frame, "Zone Occupancy:", (px1 + 10, y_off),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1, cv2.LINE_AA)
-                y_off += 20
+                # Zone occupancy bars
+                y_off += 90
                 for zname, zcount in zone_counts.items():
-                    if zname == "unknown":
-                        continue
-                    bar_len = min(zcount * 30, panel_w - 100)
-                    cv2.rectangle(display_frame, (px1 + 80, y_off - 10), (px1 + 80 + bar_len, y_off), (0, 200, 200), -1)
-                    cv2.putText(display_frame, f"{zname}: {zcount}", (px1 + 10, y_off),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
+                    if zname == "unknown": continue
+                    bar = min(zcount * 30, panel_w - 100)
+                    cv2.rectangle(display_frame, (px1+80, y_off-10), (px1+80+bar, y_off), (0,200,200), -1)
+                    cv2.putText(display_frame, f"{zname}: {zcount}", (px1+10, y_off),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200,200,200), 1, cv2.LINE_AA)
                     y_off += 18
                 
-                # Add Global Threat memory & Synthesize ReID Vector Signature
+                # Theft / ReID
                 if system_payload["theft"]:
                     store_lockdown = True
                     for sid in system_payload.get("suspects", []):
                         bbox = track_output["objects"].get(str(sid), [])
                         if isinstance(bbox, list) and len(bbox) >= 4:
                             x1, y1, x2, y2 = map(int, bbox[:4])
-                            # Extract 50% Torso ROI precisely
                             h = y2 - y1
                             roi = frame[y1+int(h*0.2):y2-int(h*0.2), x1:x2]
                             if roi.size > 0:
-                                sig = get_dominant_color(roi)
-                                global_suspect_signatures.append(sig)
-                                
-                    
-                # Render Critical Alerts cleanly over the frame
+                                global_suspect_signatures.append(get_dominant_color(roi))
+                
                 if store_lockdown:
-                    cv2.putText(display_frame, "🚨 STORE IN LOCKDOWN: THEFT IN PROGRESS 🚨", (30, 40), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 4, cv2.LINE_AA)
-                                
-                    # Watch the exit door across the multi-camera grid via ReID Core
+                    cv2.putText(display_frame, "STORE LOCKDOWN: THEFT IN PROGRESS", (30, 40),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA)
+                    
                     for id_str, role in roles_dict.items():
                         if zones_output["zones"].get(id_str) == "exit":
-                            # Extract this exit candidate's color
                             bbox = track_output["objects"].get(str(id_str), [])
                             if isinstance(bbox, list) and len(bbox) >= 4:
                                 x1, y1, x2, y2 = map(int, bbox[:4])
                                 h = y2 - y1
                                 roi = frame[y1+int(h*0.2):y2-int(h*0.2), x1:x2]
-                                
                                 match = False
                                 if roi.size > 0:
                                     test_sig = get_dominant_color(roi)
-                                    # Cross-reference with all active global thieves
                                     for thief_sig in global_suspect_signatures:
-                                        dist = np.linalg.norm(np.array(test_sig) - np.array(thief_sig))
-                                        if dist < 65:  # High-confidence Euclidean color match
+                                        if np.linalg.norm(np.array(test_sig) - np.array(thief_sig)) < 65:
                                             match = True
                                             break
-                                            
                                 if match:
-                                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], display_frame.shape[0]), (0, 0, 255), 10)
-                                    cv2.putText(display_frame, "❗ RE-IDENTIFIED SUSPECT ESCAPING EXIT ❗", (30, 100), 
-                                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 5, cv2.LINE_AA)
-                                else:
-                                    cv2.putText(display_frame, f"Civilian ID:{id_str} Exiting Safely", (x1, y1-30), 
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-                    
-                if system_payload.get("smoke", False) and not system_payload["fire"]:
-                    # Amber overlay for smoke early warning
-                    overlay = display_frame.copy()
-                    cv2.rectangle(overlay, (0, 0), (display_frame.shape[1], 50), (0, 140, 255), -1)
-                    display_frame = cv2.addWeighted(overlay, 0.6, display_frame, 0.4, 0)
-                    cv2.putText(display_frame, "⚠️ SMOKE DETECTED - EARLY WARNING", (30, 35), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 3, cv2.LINE_AA)
-                                
+                                    cv2.rectangle(display_frame, (0,0), (fw, display_frame.shape[0]), (0,0,255), 10)
+                                    cv2.putText(display_frame, "SUSPECT ESCAPING EXIT", (30, 100),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,0,255), 5, cv2.LINE_AA)
+
+                # Smoke / Fire overlays
+                if system_payload.get("smoke") and not system_payload["fire"]:
+                    ov = display_frame.copy()
+                    cv2.rectangle(ov, (0,0), (fw, 50), (0,140,255), -1)
+                    display_frame = cv2.addWeighted(ov, 0.6, display_frame, 0.4, 0)
+                    cv2.putText(display_frame, "SMOKE DETECTED - EARLY WARNING", (30, 35),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 3, cv2.LINE_AA)
+                
                 if system_payload["fire"]:
-                    fire_conf = system_payload.get("fire_confidence", 0) * 100
-                    # Full red border flash for confirmed fire
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], display_frame.shape[0]), (0, 0, 255), 8)
-                    cv2.putText(display_frame, f"🔥 FIRE CONFIRMED [{fire_conf:.0f}%]", (30, 135), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 165, 255), 4, cv2.LINE_AA)
-                    
-                # Blast to screen
-                cv2.imshow("Watchr AI Engine - LIVE", display_frame)
+                    fconf = system_payload.get("fire_confidence", 0) * 100
+                    cv2.rectangle(display_frame, (0,0), (fw, display_frame.shape[0]), (0,0,255), 8)
+                    cv2.putText(display_frame, f"FIRE CONFIRMED [{fconf:.0f}%]", (30, 135),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,165,255), 4, cv2.LINE_AA)
+                
+                cv2.imshow("Watchr AI Engine", display_frame)
                 
             except Exception as e:
-                logger.error(f"Visualization overlay crashed: {e}")
+                logger.error(f"Visualization crashed: {e}")
 
-            # 2.7 Hardware Exit Lock
             if cv2.waitKey(1) & 0xFF == 27:
-                logger.info("Terminate instruction received (ESC).")
+                logger.info("ESC pressed. Shutting down.")
                 break
 
         except Exception as e:
-            logger.error(f"SYSTEM PANIC in main loop: {e}")
+            logger.error(f"SYSTEM PANIC: {e}")
             break
 
-    # Graceful garbage collection
     if 'cam_manager' in locals():
         cam_manager.release()
     cv2.destroyAllWindows()
-    logger.info("Pipeline terminated safely.")
+    logger.info("Pipeline terminated.")
 
 if __name__ == "__main__":
     main()
