@@ -115,10 +115,11 @@ class TheftDetectionEngine:
             "first_seen": time.time(),
         }
     
-    def detect_theft(self, zones_dict, tracked_objects=None, per_person_confidence=None):
+    def detect_theft(self, zones_dict, tracked_objects=None, per_person_confidence=None, staff_overrides=None):
         """
         Engine evaluation loop.
         Arg: per_person_confidence is required for Layer 3.
+        Arg: staff_overrides contains ReID/Uniform derived staff flags.
         """
         current_zones = zones_dict.get("zones", {})
         confirmed_suspects = []
@@ -129,6 +130,8 @@ class TheftDetectionEngine:
             tracked_objects = {}
         if per_person_confidence is None:
             per_person_confidence = {}
+        if staff_overrides is None:
+            staff_overrides = {}
         
         active_ids = set(current_zones.keys())
         for tid in list(self.states.keys()):
@@ -252,6 +255,15 @@ class TheftDetectionEngine:
                     s["temporal_confirmed"] = True
             else:
                 s["anomaly_frames"] = max(0, s["anomaly_frames"] - 1)
+                
+            # HARD POCKETING OVERRIDE (Partial Theft Rule)
+            # If a person shows BOTH a sharp YOLO confidence drop AND physical height
+            # shrinkage at the shelf, it means they crouched/bent to conceal an item
+            # inside their clothing. This is a definitive physical theft action.
+            if s["confidence_drop_detected"] and s["concealment_signal"] > 0.1:
+                s["hard_pocketing"] = True
+            else:
+                s["hard_pocketing"] = s.get("hard_pocketing", False)
             
             # =============================================
             # CONFIDENCE FUSION
@@ -271,6 +283,11 @@ class TheftDetectionEngine:
                 score += self.W_TEMPORAL * 1.0
             if s["concealment_signal"] > 0.1:
                 score += self.W_CONCEALMENT * min(s["concealment_signal"] * 2, 1.0)
+                
+            # If definitive pocketing occurred, boost score to ensure threshold is met
+            # even if the person later visits the billing queue (Partial Theft bypass).
+            if s.get("hard_pocketing", False):
+                score += 0.35
                 
             s["confidence"] = round(score, 3)
             
@@ -303,20 +320,75 @@ class TheftDetectionEngine:
             # =============================================
             # ROLE CLASSIFICATION
             # =============================================
-            if s["billed_items"]:
-                roles[obj_id] = "CUSTOMER"
-            elif s["dwell_time_billing"] > 600:
+            # REAL-WORLD STAFF RULE: 
+            # A black shirt alone does not make someone staff (customers wear black).
+            # They must be wearing the uniform AND have spent time at the billing counter.
+            is_wearing_uniform = staff_overrides.get(str(obj_id)) == "STAFF"
+            has_billing_dwell = s["dwell_time_billing"] > 1500  # 100 seconds
+            
+            is_staff = is_wearing_uniform and has_billing_dwell
+            
+            # PRIORITY 1: Staff Members (Immune to theft triggers when restocking)
+            if is_staff:
                 roles[obj_id] = "STAFF"
+                
+            # PRIORITY 2: Physical theft evidence overrides everything else.
             elif s["confidence"] >= self.confidence_threshold:
                 roles[obj_id] = "SUSPECT"
+                if not s["alerted"] and obj_id not in confirmed_suspects:
+                    confirmed_suspects.append(obj_id)
+                    s["alerted"] = True
+                    
+            # PRIORITY 3: Genuine customers (paid at billing)
+            elif s["billed_items"]:
+                roles[obj_id] = "CUSTOMER"
+                
+            # PRIORITY 4: Default fallback
             else:
                 roles[obj_id] = "CUSTOMER"
+                
+        # =============================================
+        # ENTERPRISE BUSINESS INSIGHTS (RETAIL ANALYTICS)
+        # =============================================
+        unattended_customers = 0
+        checkout_queue_size = 0
+        staff_at_billing = False
+        cart_abandonments = 0
+        
+        for obj_id, s in self.states.items():
+            if obj_id not in roles: continue
+            role = roles[obj_id]
+            
+            # Tracking staff presence at the register
+            if role == "STAFF" and s["last_zone"] == "billing":
+                staff_at_billing = True
+                
+            # Tracking queue length
+            if role == "CUSTOMER" and s["last_zone"] == "billing":
+                checkout_queue_size += 1
+                
+            # Unserviced customer (dwelling at shelf > 20s = 300 frames)
+            if role == "CUSTOMER" and "shelf" in s["last_zone"] and s["shelf_dwell"] > 300:
+                unattended_customers += 1
+                
+            # Missed Conversion / Walk-out (Browsed shelves, went to exit, didn't buy, didn't steal)
+            if role == "CUSTOMER" and s["entered_exit"] and s["visited_shelf"] and not s["billed_items"]:
+                cart_abandonments += 1
+                
+        business_insights = {
+            "checkout_bottleneck_risk": checkout_queue_size >= 2 and not staff_at_billing,
+            "queue_size": checkout_queue_size,
+            "unserviced_customers": unattended_customers,
+            "missed_conversions": cart_abandonments,
+            "active_staff_count": list(roles.values()).count("STAFF")
+        }
         
         return {
             "theft": len(confirmed_suspects) > 0,
             "suspects": confirmed_suspects,
             "roles": roles,
             "suspect_details": suspect_details,
+            "business_insights": business_insights,
         }
     
     def start_evidence_recording(self, frame, fps=15):
