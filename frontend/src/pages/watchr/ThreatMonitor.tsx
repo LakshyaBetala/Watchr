@@ -27,6 +27,19 @@ export default function ThreatMonitor() {
   const [status, setStatus] = useState("SAFE");
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [isOffline, setIsOffline] = useState(false);
+  const [sessionNum, setSessionNum] = useState(9921);
+  const [sessionOpacity, setSessionOpacity] = useState(1);
+
+  useEffect(() => {
+    const cycle = setInterval(() => {
+      setSessionOpacity(0);
+      setTimeout(() => {
+        setSessionNum(Math.floor(1000 + Math.random() * 9000));
+        setSessionOpacity(1);
+      }, 300);
+    }, 8000);
+    return () => clearInterval(cycle);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -224,15 +237,15 @@ export default function ThreatMonitor() {
         </div>
       </BaseCard>
 
-      <BaseCard className="col-8 flex flex-col min-h-[450px]">
-        <div className="flex items-center justify-between mb-6 flex-shrink-0 relative z-10">
+      <BaseCard className="col-8 flex flex-col">
+        <div className="flex items-center justify-between mb-4 flex-shrink-0 relative z-10">
           <span className="card-title text-[var(--text-primary)]">Risk Over Time (12h)</span>
           <div className="flex items-center gap-3">
             <span className="text-[0.6rem] font-jetbrains text-[var(--text-muted)] uppercase tracking-widest">Scanning active</span>
             <Flame size={16} className="text-[var(--negative)] animate-pulse" />
           </div>
         </div>
-        <div className="flex-1 relative w-full h-full p-2">
+        <div className="relative w-full p-2" style={{ height: 240 }}>
           {/* Technical Backdrop */}
           <div className="absolute inset-x-0 top-0 bottom-4 pointer-events-none opacity-[0.05] z-0" 
                style={{ background: 'repeating-linear-gradient(90deg, var(--text-muted), var(--text-muted) 1px, transparent 1px, transparent 40px)' }} />
@@ -266,79 +279,136 @@ export default function ThreatMonitor() {
         </div>
       </BaseCard>
 
-      {/* ── STATE MACHINE BOTTOM ──────────────────────────────────────────────── */}
-      <BaseCard className="col-12 p-10 flex flex-col relative overflow-hidden">
-        {/* Decorative Grid Background for this specific module */}
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(var(--text-muted) 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
+      {/* ── BEHAVIORAL STATE PATH VISUALIZER ──────────────────────────────────── */}
+      <BaseCard className="col-12 p-8 relative overflow-hidden">
 
-        <div className="flex items-center justify-between mb-10 relative z-10">
+        {/* CSS keyframes for inline animations */}
+        <style>{`
+          @keyframes borderPulse {
+            0%, 100% { opacity: 0.5; box-shadow: 0 0 8px rgba(198,241,53,0.15); }
+            50%       { opacity: 1;   box-shadow: 0 0 18px rgba(198,241,53,0.4); }
+          }
+          @keyframes redBlink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0.2; }
+          }
+          @keyframes travelDot {
+            0%   { left: 0%; opacity: 0; }
+            5%   { opacity: 1; }
+            95%  { opacity: 1; }
+            100% { left: calc(66% - 6px); opacity: 0; }
+          }
+          .node-active-box {
+            animation: borderPulse 2s ease-in-out infinite;
+          }
+          .dot-blink {
+            animation: redBlink 1.4s step-start infinite;
+          }
+          .travel-dot {
+            animation: travelDot 3s linear infinite;
+          }
+        `}</style>
+
+        {/* Header */}
+        <div className="flex items-center justify-between mb-10">
           <div>
-            <p className="text-[0.8rem] font-bold text-[var(--text-primary)] mb-0.5 tracking-tight uppercase">BEHAVIORAL STATE PATH VISUALIZER</p>
-            <p className="text-[0.65rem] text-[var(--text-muted)] font-jetbrains uppercase tracking-widest">REAL-TIME SEQUENCE ANALYSIS</p>
+            <p className="text-[0.7rem] font-bold text-[var(--text-primary)] uppercase tracking-[0.15em]">
+              Behavioral State Path Visualizer
+            </p>
+            <p className="text-[0.6rem] text-[var(--text-muted)] font-jetbrains uppercase tracking-widest mt-0.5">
+              Real-time sequence analysis
+            </p>
           </div>
-          <div className="flex gap-2">
-            <span className="px-3 py-1 rounded-full bg-[var(--bg-base)] border border-[var(--border)] text-[0.65rem] font-bold text-[var(--accent)] uppercase tracking-tighter shadow-[0_0_10px_rgba(198,241,53,0.1)]">
-              ACTIVE SESSION: #9921
-            </span>
-          </div>
+          <span
+            className="px-3 py-1 rounded-full bg-[var(--bg-base)] border border-[var(--border)] text-[0.6rem] font-bold text-[var(--accent)] font-jetbrains uppercase tracking-wider"
+            style={{ opacity: sessionOpacity, transition: 'opacity 300ms ease' }}
+          >
+            Active Session: #{sessionNum}
+          </span>
         </div>
 
-        <div className="flex items-start justify-between px-16 relative w-full overflow-visible py-8 min-h-[220px]">
-          {/* STATIC CONNECTING LINE */}
-          <div className="absolute top-20 left-16 right-16 h-[1px] bg-[var(--border)] opacity-20 z-0">
-             <div className="w-[33%] h-full bg-[var(--accent)] opacity-50" />
+        {/* Nodes + connecting line */}
+        <div className="relative flex items-start justify-between px-12">
+
+          {/* Base line — full width, very dim */}
+          <div className="absolute left-12 right-12 top-7 h-px z-0" style={{ background: 'rgba(255,255,255,0.12)' }}>
+            {/* Green traveled segment: node 1 → node 3 (≈ 66% of the line) */}
+            <div className="absolute left-0 h-full" style={{ width: '66%', background: 'rgba(198,241,53,0.4)' }} />
+            {/* Traveling dot along the green segment */}
+            <div
+              className="travel-dot absolute top-[-1px] w-[6px] h-[3px] rounded-sm"
+              style={{ background: 'var(--accent)', boxShadow: '0 0 6px var(--accent)' }}
+            />
           </div>
 
-          {[
-            { id: "SEQ_01",       label: "Enters Store",    desc: "Target tracked", icon: LogIn,     meta: "9s",       status: "active" },
-            { id: "SEQ_06",       label: "Browses Shelf",   desc: "Extended dwell", icon: Eye,       meta: "+4m 12s",  status: "inactive" },
-            { id: "VIOLATION_04", label: "Skips Billing",   desc: "Sequence breach", icon: XCircle,   meta: "+5m 58s",  status: "warning" },
-            { id: "OUT_04",       label: "Exits Location",  desc: "Leaves unbilled", icon: LogOut,    meta: "+4m 35s",  status: "inactive" }
-          ].map((step, i) => {
-            const isActive = step.status === "active";
-            const isWarning = step.status === "warning";
-            const StepIcon = step.icon;
+          {([
+            { id: "SEQ_01",       label: "Enters Store",   sub: "Target tracked",   icon: LogIn,   meta: "9s",       status: "active"   },
+            { id: "SEQ_06",       label: "Browses Shelf",  sub: "Extended dwell",   icon: Eye,     meta: "+4m 12s",  status: "inactive" },
+            { id: "VIOLATION_04", label: "Skips Billing",  sub: "Sequence breach",  icon: XCircle, meta: "+5m 58s",  status: "warning"  },
+            { id: "OUT_04",       label: "Exits Location", sub: "Leaves unbilled",  icon: LogOut,  meta: "+4m 35s",  status: "inactive" },
+          ] as const).map((step, i) => {
+            const isActive   = step.status === "active";
+            const isWarning  = step.status === "warning";
+            const isInactive = step.status === "inactive";
+            const Icon = step.icon;
 
             return (
-              <div key={step.id} className="flex flex-col items-center relative z-10 w-48">
-                {/* Node Box */}
-                <div className="relative mb-4">
-                  <div 
-                    className={`w-14 h-14 rounded-lg border flex items-center justify-center transition-all duration-300
-                      ${isActive ? 'border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_5%,transparent)] shadow-[0_0_15px_rgba(198,241,53,0.1)]' : 'border-[var(--border)] bg-[rgba(255,255,255,0.02)]'}
-                      ${isWarning ? 'border-[var(--negative)] bg-[color-mix(in_srgb,var(--negative)_5%,transparent)]' : ''}
-                      ${!isActive && !isWarning ? 'opacity-40' : ''}
-                    `}
-                  >
-                    <StepIcon size={20} className={isWarning ? "text-[var(--negative)]" : isActive ? "text-[var(--accent)]" : "text-[var(--text-subtle)]"} />
-                  </div>
-                  
-                  {/* Status Dot Below Box */}
-                  {(isActive || isWarning) && (
-                    <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full ${isActive ? 'bg-[var(--accent)]' : 'bg-[var(--negative)] opacity-50'}`} />
-                  )}
+              <motion.div
+                key={step.id}
+                className={`flex flex-col items-center relative z-10 w-44 ${isInactive ? "opacity-35" : ""}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: isInactive ? 0.35 : 1, y: 0 }}
+                transition={{ duration: 0.3, delay: i * 0.12 }}
+              >
+                {/* Icon box */}
+                <div
+                  className={[
+                    "w-14 h-14 rounded-lg border flex items-center justify-center mb-3",
+                    isActive  ? "border-[var(--accent)]   bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]   node-active-box" : "",
+                    isWarning ? "border-[var(--negative)]  bg-[color-mix(in_srgb,var(--negative)_6%,transparent)]" : "",
+                    isInactive ? "border-[var(--border)]   bg-transparent" : "",
+                  ].join(" ")}
+                  style={isWarning ? { boxShadow: '0 0 12px rgba(255,80,80,0.25)' } : undefined}
+                >
+                  <Icon
+                    size={20}
+                    className={
+                      isActive  ? "text-[var(--accent)]"   :
+                      isWarning ? "text-[var(--negative)]" :
+                                  "text-[var(--text-subtle)]"
+                    }
+                  />
                 </div>
 
-                {/* Node Text Content */}
-                <div className="flex flex-col items-center mt-4">
-                  <span className="text-[0.55rem] font-jetbrains font-bold text-[var(--accent)] tracking-tighter uppercase opacity-60 mb-0.5">
-                    {step.id}
-                  </span>
-                  <span className="text-[0.6rem] font-jetbrains font-bold text-[var(--text-muted)] tracking-wider mb-2">
-                    {step.meta}
-                  </span>
-                  
-                  <span className={`text-[15px] font-semibold tracking-tight mb-1 ${isActive ? "text-white" : "text-[var(--text-muted)]"}`}>
-                    {step.label}
-                  </span>
-                  <span className="text-[0.65rem] text-center font-medium leading-relaxed text-[var(--text-muted)] max-w-[130px] opacity-60 italic">
-                    {step.desc}
-                  </span>
-                </div>
-              </div>
+                {/* Status dot */}
+                {isActive && (
+                  <div className="w-1.5 h-1.5 rounded-full mb-3 bg-[var(--accent)]" />
+                )}
+                {isWarning && (
+                  <div className="dot-blink w-1.5 h-1.5 rounded-full mb-3 bg-[var(--negative)]" />
+                )}
+                {isInactive && <div className="h-[18px]" />}
+
+                {/* Labels */}
+                <span className="text-[0.52rem] font-jetbrains font-bold text-[var(--accent)] uppercase tracking-widest opacity-50 mb-0.5">
+                  {step.id}
+                </span>
+                <span className="text-[0.58rem] font-jetbrains text-[var(--text-muted)] mb-2">
+                  {step.meta}
+                </span>
+                <span className={`text-[0.9rem] font-semibold tracking-tight mb-1 text-center
+                  ${isActive || isWarning ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"}
+                `}>
+                  {step.label}
+                </span>
+                <span className="text-[0.65rem] text-[var(--text-muted)] italic text-center opacity-60">
+                  {step.sub}
+                </span>
+              </motion.div>
             );
           })}
         </div>
+
       </BaseCard>
 
     </div>

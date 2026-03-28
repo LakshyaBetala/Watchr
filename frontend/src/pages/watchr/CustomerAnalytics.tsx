@@ -227,7 +227,7 @@ export default function CustomerAnalytics() {
         </div>
       </BaseCard>
 
-      <BaseCard className="col-8 flex flex-col min-h-[450px]">
+      <BaseCard className="col-8 flex flex-col">
         <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div className="flex flex-col">
             <span className="card-title text-[var(--text-primary)]">Dwell Time Distribution</span>
@@ -236,47 +236,50 @@ export default function CustomerAnalytics() {
           <span className="text-[0.65rem] px-2 py-1 rounded bg-[color-mix(in_srgb,var(--accent)_20%,transparent)] text-[var(--accent)] font-jetbrains font-bold">AVG: {avgDwellMinutes}m</span>
         </div>
         
-        <div className="flex-1 relative w-full h-full p-2 overflow-hidden">
-          {/* Tactical Backdrop */}
+        <div className="relative w-full p-2 overflow-hidden" style={{ height: 240 }}>
+          {/* Subtle vertical guide lines */}
           <div className="absolute inset-x-0 top-0 bottom-4 pointer-events-none opacity-[0.03] z-0" 
                style={{ background: 'repeating-linear-gradient(90deg, var(--text-muted), var(--text-muted) 1px, transparent 1px, transparent 60px)' }} />
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={barChartData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-              {/* Pattern definition for striped bars */}
               <defs>
-                <pattern id="diagonalStripes" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
-                  <rect width="100%" height="100%" fill="var(--accent)" fillOpacity={0.8} />
-                  <line x1="0" y1="0" x2="0" y2="8" stroke="#111" strokeWidth="4" />
-                </pattern>
+                <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--accent)" stopOpacity={1} />
+                  <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.25} />
+                </linearGradient>
               </defs>
               <XAxis 
                 dataKey="name" 
                 axisLine={false} 
-                tickLine={false} 
+                tickLine={false}
+                tick={{ fill: 'var(--text-muted)', fontSize: 11, fontFamily: "'JetBrains Mono'" }}
                 dy={10}
               />
               <YAxis 
                 axisLine={false} 
-                tickLine={false} 
+                tickLine={false}
+                tick={{ fill: 'var(--text-muted)', fontSize: 10, fontFamily: "'JetBrains Mono'" }}
               />
               <Tooltip cursor={{ fill: "rgba(255,255,255,0.03)" }} content={<ChartTooltip />} />
               <ReferenceLine 
                 y={avgDwellMinutes} 
                 stroke="var(--text-muted)" 
-                strokeDasharray="3 3" 
-                label={{ position: 'top', value: 'AVG DWELL', fill: "var(--text-muted)", fontSize: 10, fontFamily: "'JetBrains Mono'" }} 
+                strokeDasharray="3 3"
+                strokeOpacity={0.4}
+                label={{ position: 'insideTopRight', value: 'AVG DWELL', fill: "var(--text-muted)", fontSize: 9, fontFamily: "'JetBrains Mono'", opacity: 0.5 }} 
               />
               <Bar 
                 dataKey="dwellMin" 
                 name="Dwell Time"
-                fill="url(#diagonalStripes)" 
+                fill="url(#barGradient)" 
                 radius={[4, 4, 0, 0]} 
-                animationDuration={1500}
-                barSize={32}
+                animationDuration={1200}
+                barSize={36}
               />
             </BarChart>
           </ResponsiveContainer>
         </div>
+
       </BaseCard>
 
       {/* ── ROW 3 ────────────────────────────────────────────────────────────── */}
@@ -342,7 +345,7 @@ export default function CustomerAnalytics() {
         </div>
       </BaseCard>
 
-      <BaseCard className="col-8 min-h-[450px] flex flex-col">
+      <BaseCard className="col-8 flex flex-col">
         <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div className="flex flex-col">
             <span className="card-title text-[var(--text-primary)]">Session Timeline</span>
@@ -350,7 +353,7 @@ export default function CustomerAnalytics() {
           </div>
         </div>
         
-        <div className="flex-1 w-full h-full relative p-2 overflow-hidden">
+        <div className="w-full relative p-2 overflow-hidden" style={{ height: 240 }}>
           {/* Scanline Backdrop */}
           <div className="absolute inset-0 pointer-events-none opacity-[0.02] z-0" 
                style={{ background: 'repeating-linear-gradient(0deg, var(--text-muted), var(--text-muted) 1px, transparent 1px, transparent 4px)' }} />
