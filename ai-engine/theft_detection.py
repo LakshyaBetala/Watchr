@@ -1,43 +1,65 @@
 import logging
 import time
+import cv2
+import os
+from collections import deque
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 class TheftDetectionEngine:
     """
-    Phase 17: Advanced Multi-Signal Behavioral Theft Detection Engine.
+    Enterprise Multi-Signal Behavioral Theft Detection Engine.
     
-    This is NOT a simple "stood at shelf for 3 seconds" detector. It uses a 5-layer
-    behavioral state machine that tracks the FULL lifecycle of a potential theft:
+    This engine fuses 6 independent detection layers into a weighted confidence score.
+    It builds entirely on the original 5-layer heuristic engine, but natively integrates
+    the 'Confidence Drop' machine-learning anomaly signal inspired by Kyberastra.
     
-    Layer 1 - PRODUCT ENGAGEMENT:  Did they interact with shelf merchandise?
-    Layer 2 - TRAJECTORY ANOMALY:  Did they skip the billing counter entirely?
-    Layer 3 - CONCEALMENT SIGNAL:  Did their bounding box SIZE shrink suddenly at the shelf?
-                                   (A person crouching/bending to hide items in pockets/bags
-                                    causes height reduction in the bounding box)
-    Layer 4 - VELOCITY SPIKE:      Did they suddenly RUSH toward the exit after shelf contact?
-                                   (Normal customers browse slowly; thieves bolt)
-    Layer 5 - TEMPORAL LOCK:       Sustained anomaly confirmation over N frames to prevent flicker
+    Layer 1 - PRODUCT ENGAGEMENT:    Did they interact with shelf merchandise? (zone dwell)
+    Layer 2 - TRAJECTORY ANOMALY:    Did they skip the billing counter entirely? (shelf→exit)
+    Layer 3 - CONFIDENCE DROP:       Did YOLO's detection confidence drop sharply at the shelf?
+                                     (A person bending/crouching to conceal items causes
+                                      their silhouette to warp, dropping YOLO confidence)
+    Layer 4 - VELOCITY SPIKE:        Did they rush toward the exit after shelf contact?
+    Layer 5 - TEMPORAL LOCK:         Sustained anomaly confirmation over N frames
+    Layer 6 - CONCEALMENT SIGNAL:    Bounding box height shrinkage at shelf
     
-    Each signal independently contributes a CONFIDENCE SCORE, and the final theft
-    determination is the weighted fusion of all 5 layers.
+    EVIDENCE CAPTURE:
+        When theft confidence exceeds threshold, the engine automatically records
+        a 30-second evidence clip.
     """
     
     def __init__(self, shelf_engage_frames=8, velocity_spike_thresh=25.0, 
-                 size_shrink_ratio=0.75, confidence_threshold=0.55):
+                 confidence_drop_threshold=0.20, size_shrink_ratio=0.75,
+                 confidence_threshold=0.50, evidence_duration=30):
         self.states = {}
         self.shelf_engage_frames = shelf_engage_frames
         self.velocity_spike_thresh = velocity_spike_thresh
+        self.confidence_drop_threshold = confidence_drop_threshold
         self.size_shrink_ratio = size_shrink_ratio
         self.confidence_threshold = confidence_threshold
+        self.evidence_duration = evidence_duration
         
         # Layer weights (tuned for real-world retail)
-        self.W_TRAJECTORY = 0.40   # Skipping billing is the strongest signal
-        self.W_ENGAGEMENT = 0.20   # Must have interacted with product
-        self.W_CONCEALMENT = 0.15  # Bounding box shrinkage at shelf
-        self.W_VELOCITY = 0.15     # Speed burst toward exit
-        self.W_TEMPORAL = 0.10     # Sustained anomaly over time
+        self.W_TRAJECTORY = 0.30     # Skipping billing is the strongest signal
+        self.W_ENGAGEMENT = 0.15     # Must have interacted with product
+        self.W_CONF_DROP = 0.20      # YOLO confidence drop (from kyberastra)
+        self.W_VELOCITY = 0.15       # Speed burst toward exit
+        self.W_TEMPORAL = 0.10       # Sustained anomaly over time
+        self.W_CONCEALMENT = 0.10    # Bounding box shrinkage
+        
+        # ===== EVIDENCE CAPTURE STATE =====
+        self.recording = False
+        self.video_writer = None
+        self.record_start_time = None
+        self.evidence_dir = os.path.join(os.path.dirname(__file__), "evidence")
+        os.makedirs(self.evidence_dir, exist_ok=True)
+        self.latest_evidence_path = None
+        
+        # ===== ALERT DEDUPLICATION =====
+        self.alert_cooldown = {}
+        self.ALERT_COOLDOWN_SECS = 300  # 5 minutes
         
     def _init_state(self):
         return {
@@ -46,7 +68,7 @@ class TheftDetectionEngine:
             "visited_billing": False,
             "entered_exit": False,
             "last_zone": "unknown",
-            "zone_history": [],       # Full zone trajectory log
+            "zone_history": [],
             
             # Layer 1: Product Engagement
             "shelf_dwell": 0,
@@ -55,14 +77,15 @@ class TheftDetectionEngine:
             # Layer 2: Trajectory
             "trajectory_anomaly": False,
             
-            # Layer 3: Concealment Detection
-            "bbox_at_shelf_entry": None,  # Height when they first touch shelf
-            "bbox_min_at_shelf": None,    # Minimum height during shelf stay
-            "concealment_signal": 0.0,
+            # Layer 3: Confidence Drop (Kyberastra integration)
+            "confidence_history": deque(maxlen=30),
+            "baseline_confidence": None,
+            "confidence_drop_detected": False,
+            "max_confidence_drop": 0.0,
             
             # Layer 4: Velocity Spike
             "last_centroid": None,
-            "velocities": [],             # Rolling window of movement speeds
+            "velocities": [],
             "avg_speed_at_shelf": 0.0,
             "speed_at_exit_approach": 0.0,
             "velocity_spike": False,
@@ -71,34 +94,39 @@ class TheftDetectionEngine:
             "anomaly_frames": 0,
             "temporal_confirmed": False,
             
-            # Billing dwell (for role classification)
-            "dwell_time_billing": 0,
+            # Layer 6: Concealment (bbox shrinkage)
+            "bbox_at_shelf_entry": None,
+            "bbox_min_at_shelf": None,
+            "concealment_signal": 0.0,
             
-            # Final
+            # Roles
+            "dwell_time_billing": 0,
             "confidence": 0.0,
             "alerted": False,
+            "first_seen": time.time(),
         }
     
-    def detect_theft(self, zones_dict, tracked_objects=None):
+    def detect_theft(self, zones_dict, tracked_objects=None, per_person_confidence=None):
         """
-        Advanced theft evaluation with optional bounding box data for concealment/velocity.
-        
-        Args:
-            zones_dict: {"zones": {"id": "zone_name"}}
-            tracked_objects: {"id": [x1, y1, x2, y2, conf]} (optional, from tracker)
+        Engine evaluation loop.
+        Arg: per_person_confidence is required for Layer 3.
         """
         current_zones = zones_dict.get("zones", {})
         confirmed_suspects = []
         roles = {}
+        suspect_details = []
         
         if tracked_objects is None:
             tracked_objects = {}
+        if per_person_confidence is None:
+            per_person_confidence = {}
         
-        # Garbage collect stale IDs
         active_ids = set(current_zones.keys())
         for tid in list(self.states.keys()):
             if tid not in active_ids:
-                del self.states[tid]
+                state = self.states[tid]
+                if time.time() - state.get("first_seen", 0) > 120:
+                    del self.states[tid]
         
         for obj_id, current_zone in current_zones.items():
             if obj_id not in self.states:
@@ -106,14 +134,14 @@ class TheftDetectionEngine:
                 
             s = self.states[obj_id]
             s["zone_history"].append(current_zone)
-            # Cap history to prevent memory leak
             if len(s["zone_history"]) > 300:
                 s["zone_history"] = s["zone_history"][-300:]
             
             bbox = tracked_objects.get(str(obj_id), None)
+            current_conf = per_person_confidence.get(str(obj_id), None)
             
             # =============================================
-            # LAYER 1: PRODUCT ENGAGEMENT (Shelf Dwell)
+            # LAYER 1 & 6: ENGAGEMENT & CONCEALMENT
             # =============================================
             if "shelf" in current_zone:
                 s["shelf_dwell"] += 1
@@ -121,7 +149,6 @@ class TheftDetectionEngine:
                     s["shelf_engaged"] = True
                     s["visited_shelf"] = True
                     
-                # Record bounding box dimensions for concealment analysis
                 if bbox is not None and len(bbox) >= 4:
                     h = float(bbox[3]) - float(bbox[1])
                     if s["bbox_at_shelf_entry"] is None:
@@ -138,16 +165,29 @@ class TheftDetectionEngine:
             
             s["last_zone"] = current_zone
             
-            # =============================================
-            # LAYER 3: CONCEALMENT DETECTION
-            # =============================================
             if s["bbox_at_shelf_entry"] is not None and s["bbox_min_at_shelf"] is not None:
                 ratio = s["bbox_min_at_shelf"] / max(s["bbox_at_shelf_entry"], 1)
                 if ratio < self.size_shrink_ratio:
-                    s["concealment_signal"] = 1.0 - ratio  # Higher = more suspicious
-                    
+                    s["concealment_signal"] = 1.0 - ratio
+            
             # =============================================
-            # LAYER 4: VELOCITY SPIKE DETECTION
+            # LAYER 3: CONFIDENCE DROP (Kyberastra Layer)
+            # =============================================
+            if current_conf is not None:
+                s["confidence_history"].append(current_conf)
+                
+                if s["baseline_confidence"] is None and len(s["confidence_history"]) >= 5:
+                    s["baseline_confidence"] = max(list(s["confidence_history"])[:5])
+                
+                if s["baseline_confidence"] is not None and "shelf" in current_zone:
+                    drop = s["baseline_confidence"] - current_conf
+                    s["max_confidence_drop"] = max(s["max_confidence_drop"], drop)
+                    
+                    if drop > self.confidence_drop_threshold:
+                        s["confidence_drop_detected"] = True
+            
+            # =============================================
+            # LAYER 4: VELOCITY SPIKE
             # =============================================
             if bbox is not None and len(bbox) >= 4:
                 cx = (float(bbox[0]) + float(bbox[2])) / 2
@@ -159,20 +199,16 @@ class TheftDetectionEngine:
                     speed = (dx**2 + dy**2) ** 0.5
                     s["velocities"].append(speed)
                     
-                    # Keep rolling window of 30 frames
                     if len(s["velocities"]) > 30:
                         s["velocities"] = s["velocities"][-30:]
                     
-                    # Track average speed during shelf interaction
                     if "shelf" in current_zone and len(s["velocities"]) > 3:
                         s["avg_speed_at_shelf"] = sum(s["velocities"][-10:]) / min(len(s["velocities"]), 10)
                     
-                    # Track speed when approaching exit
                     if current_zone in ["exit", "unknown"] and s["shelf_engaged"]:
                         recent_speed = sum(s["velocities"][-5:]) / min(len(s["velocities"]), 5) if s["velocities"] else 0
                         s["speed_at_exit_approach"] = recent_speed
                         
-                        # Velocity spike = exit speed is 2x their browsing speed
                         if s["avg_speed_at_shelf"] > 0:
                             if recent_speed > s["avg_speed_at_shelf"] * 2.0:
                                 s["velocity_spike"] = True
@@ -190,7 +226,14 @@ class TheftDetectionEngine:
             # =============================================
             # LAYER 5: TEMPORAL LOCK
             # =============================================
-            if s["trajectory_anomaly"]:
+            active_signals = sum([
+                s["trajectory_anomaly"],
+                s["confidence_drop_detected"],
+                s["velocity_spike"],
+                s["concealment_signal"] > 0.1
+            ])
+            
+            if active_signals >= 2:
                 s["anomaly_frames"] += 1
                 if s["anomaly_frames"] >= 5:
                     s["temporal_confirmed"] = True
@@ -198,29 +241,23 @@ class TheftDetectionEngine:
                 s["anomaly_frames"] = max(0, s["anomaly_frames"] - 1)
             
             # =============================================
-            # CONFIDENCE FUSION (Weighted Sum of All Layers)
+            # CONFIDENCE FUSION
             # =============================================
             score = 0.0
             
-            # L1: Engagement
             if s["shelf_engaged"]:
                 score += self.W_ENGAGEMENT * 1.0
-                
-            # L2: Trajectory (strongest signal)
             if s["trajectory_anomaly"]:
                 score += self.W_TRAJECTORY * 1.0
-                
-            # L3: Concealment
-            if s["concealment_signal"] > 0.1:
-                score += self.W_CONCEALMENT * min(s["concealment_signal"] * 2, 1.0)
-                
-            # L4: Velocity Spike
+            if s["confidence_drop_detected"]:
+                drop_magnitude = min(s["max_confidence_drop"] / 0.5, 1.0)
+                score += self.W_CONF_DROP * drop_magnitude
             if s["velocity_spike"]:
                 score += self.W_VELOCITY * 1.0
-                
-            # L5: Temporal
             if s["temporal_confirmed"]:
                 score += self.W_TEMPORAL * 1.0
+            if s["concealment_signal"] > 0.1:
+                score += self.W_CONCEALMENT * min(s["concealment_signal"] * 2, 1.0)
                 
             s["confidence"] = round(score, 3)
             
@@ -228,13 +265,27 @@ class TheftDetectionEngine:
             # FINAL DETERMINATION
             # =============================================
             if s["confidence"] >= self.confidence_threshold and not s["alerted"]:
-                confirmed_suspects.append(obj_id)
-                s["alerted"] = True
-                logger.error(f"🚨 THEFT CONFIRMED: ID {obj_id} | Confidence: {s['confidence']*100:.1f}%")
-                logger.error(f"   Trajectory: {'ANOMALOUS' if s['trajectory_anomaly'] else 'NORMAL'}")
-                logger.error(f"   Concealment: {s['concealment_signal']:.2f}")
-                logger.error(f"   Velocity Spike: {s['velocity_spike']}")
-                logger.error(f"   Zone Path: {' → '.join(s['zone_history'][-15:])}")
+                cooldown_key = f"pattern_{obj_id}"
+                last_alert = self.alert_cooldown.get(cooldown_key, 0)
+                
+                if time.time() - last_alert > self.ALERT_COOLDOWN_SECS:
+                    confirmed_suspects.append(obj_id)
+                    s["alerted"] = True
+                    self.alert_cooldown[cooldown_key] = time.time()
+                    
+                    detail = {
+                        "id": obj_id,
+                        "confidence": s["confidence"],
+                        "trajectory_anomaly": s["trajectory_anomaly"],
+                        "confidence_drop": s["confidence_drop_detected"],
+                        "max_conf_drop": round(s["max_confidence_drop"], 3),
+                        "velocity_spike": s["velocity_spike"],
+                        "concealment": round(s["concealment_signal"], 3),
+                        "zone_path": s["zone_history"][-15:],
+                    }
+                    suspect_details.append(detail)
+                    
+                    logger.error(f"🚨 THEFT CONFIRMED: ID {obj_id} | Confidence: {s['confidence']*100:.1f}%")
             
             # =============================================
             # ROLE CLASSIFICATION
@@ -249,36 +300,41 @@ class TheftDetectionEngine:
         return {
             "theft": len(confirmed_suspects) > 0,
             "suspects": confirmed_suspects,
-            "roles": roles
+            "roles": roles,
+            "suspect_details": suspect_details,
         }
-
-if __name__ == "__main__":
-    logger.info("=== ADVANCED THEFT ENGINE SELF-TEST ===")
-    engine = TheftDetectionEngine()
     
-    # Simulate: Person 1 shops normally, Person 2 steals
-    timeline = [
-        {"zones": {"1": "unknown", "2": "unknown"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},
-        {"zones": {"1": "shelf_1", "2": "shelf_1"}},   # Both engaged (8 frames)
-        {"zones": {"1": "billing", "2": "unknown"}},    # Person 1 goes to billing, Person 2 skips
-        {"zones": {"1": "billing", "2": "exit"}},       # Person 2 heads to exit
-        {"zones": {"1": "billing", "2": "exit"}},
-        {"zones": {"1": "billing", "2": "exit"}},
-        {"zones": {"1": "billing", "2": "exit"}},
-        {"zones": {"1": "billing", "2": "exit"}},       # Temporal lock triggers
-        {"zones": {"1": "exit", "2": "exit"}},           # Both leave
-    ]
+    def start_evidence_recording(self, frame, fps=15):
+        """Record 30s evidence video."""
+        if self.recording: return
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"theft_evidence_{timestamp}.mp4"
+        self.latest_evidence_path = os.path.join(self.evidence_dir, filename)
+        
+        h, w = frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.video_writer = cv2.VideoWriter(self.latest_evidence_path, fourcc, fps, (w, h))
+        self.recording = True
+        self.record_start_time = time.time()
+        logger.info(f"📹 Evidence recording started: {self.latest_evidence_path}")
     
-    for i, frame_data in enumerate(timeline):
-        result = engine.detect_theft(frame_data)
-        if result["theft"]:
-            logger.error(f"Frame {i+1}: 🔔 THEFT ALERT: {result}")
-        else:
-            logger.info(f"Frame {i+1}: OK | Roles: {result['roles']}")
+    def record_frame(self, frame):
+        if not self.recording or self.video_writer is None: return False
+        self.video_writer.write(frame)
+        if time.time() - self.record_start_time >= self.evidence_duration:
+            self.stop_evidence_recording()
+            return False
+        return True
+    
+    def stop_evidence_recording(self):
+        if self.video_writer is not None:
+            self.video_writer.release()
+            self.video_writer = None
+        self.recording = False
+        logger.info(f"📹 Evidence saved: {self.latest_evidence_path}")
+    
+    def get_latest_evidence_path(self):
+        if self.latest_evidence_path and os.path.exists(self.latest_evidence_path):
+            return self.latest_evidence_path
+        return None

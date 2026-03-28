@@ -1,4 +1,0 @@
-﻿6bbca58f5681ae2d76e2e952faaf690a9c3f9e27	refs/heads/backend-dev
-d47c5132ec94cd6827efae0c15e495d23f0fa41c	refs/heads/bouncer
-aae4bb83a8d72238826859db6761741192eb6dc7	refs/heads/front
-2cb4e88caa82987cf0130cdcc19e93cb1ee2532f	refs/heads/main

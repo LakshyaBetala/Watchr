@@ -1,5 +1,60 @@
+# ─── Python ───────────────────────────────────────────────
 venv/
-.env
 __pycache__/
+*.pyc
+*.pyo
+.env
+
+# ─── Node / Frontend ─────────────────────────────────────
 node_modules/
+dist/
 .DS_Store
+
+# ─── AI Model Weights & Caches ───────────────────────────
+*.pt
+*.onnx
+*.engine
+trt_cache/
+runs/
+auto_zones.json
+
+# ─── Temp Analysis Files ─────────────────────────────────
+bouncer_commits.txt
+bouncer_files.txt
+diff_log.txt
+out.txt
+git_tree.txt
+merge_conflicts.txt
+
+# ─── AI Assistant Config Folders (not project code) ──────
+.adal/
+.claude/
+.codebuddy/
+.commandcode/
+.continue/
+.cortex/
+.crush/
+.factory/
+.goose/
+.iflow/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.vibe/
+.windsurf/
+.zencoder/
+
+# ─── IDE ─────────────────────────────────────────────────
+.vscode/
+.idea/
