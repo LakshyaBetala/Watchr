@@ -355,9 +355,9 @@ export default function ThreatMonitor() {
             return (
               <motion.div
                 key={step.id}
-                className={`flex flex-col items-center relative z-10 w-44 ${isInactive ? "opacity-35" : ""}`}
+                className={`flex flex-col items-center relative z-10 w-44`}
                 initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: isInactive ? 0.35 : 1, y: 0 }}
+                animate={{ opacity: isInactive ? 0.5 : 1, y: 0 }}
                 transition={{ duration: 0.3, delay: i * 0.12 }}
               >
                 {/* Icon box */}
