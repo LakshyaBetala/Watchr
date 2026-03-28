@@ -56,31 +56,44 @@ def color_name(b, g, r):
     return closest
 
 def play_audio_then_speak(mp3_filename, loops, text):
-    """Zero-latency background Pygame MP3 loop + TTS."""
+    """Background thread: play MP3 `loops` times, then speak TTS."""
     import subprocess, threading, os
     def _worker():
-        import time
-        audio_path = os.path.join(os.path.dirname(__file__), "audio", mp3_filename)
+        import time as _time
+        audio_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio", mp3_filename)
+        logger.info(f"🔊 Audio trigger: {mp3_filename} x{loops} | Path: {audio_path} | Exists: {os.path.exists(audio_path)}")
+        
         if os.path.exists(audio_path):
             try:
                 import pygame
-                pygame.mixer.init()
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
                 pygame.mixer.music.load(audio_path)
+                # play(loops-1) because pygame counts 0=play once, 1=play twice, etc.
                 pygame.mixer.music.play(loops - 1)
                 while pygame.mixer.music.get_busy():
-                    time.sleep(0.1)
-                pygame.mixer.quit()
+                    _time.sleep(0.2)
+                _time.sleep(0.3)  # grace period
+                pygame.mixer.music.stop()
             except Exception as e:
-                pass
+                logger.error(f"Pygame audio error: {e}")
+                # Fallback to beeps
+                import winsound
+                for _ in range(loops):
+                    winsound.Beep(1200, 600)
+                    _time.sleep(0.15)
         else:
+            logger.warning(f"MP3 not found at {audio_path}, using beep fallback")
             import winsound
             for _ in range(loops):
-                winsound.Beep(1200, 500)
-                time.sleep(0.2)
-                
-        safe_text = str(text).replace("'", "")
-        cmd = f'powershell -c "Add-Type -AssemblyName System.speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(\'{safe_text}\')"'
-        subprocess.run(cmd, shell=True)
+                winsound.Beep(1200, 600)
+                _time.sleep(0.15)
+        
+        # TTS after audio
+        if text:
+            safe_text = str(text).replace("'", "").replace('"', '')
+            cmd = f'powershell -c "Add-Type -AssemblyName System.speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(\'{safe_text}\')"'
+            subprocess.run(cmd, shell=True)
     threading.Thread(target=_worker, daemon=True).start()
 
 
@@ -171,7 +184,7 @@ def main():
             confidence_drop_threshold=0.20,
             confidence_threshold=0.50
         )
-        fire_engine = FireDetector(confidence_threshold=0.75)
+        fire_engine = FireDetector(confidence_threshold=0.45)
         
         logger.info(f"Detection backend: {detector.backend}")
         logger.info(f"Tracker mode: {tracker_mode}")
