@@ -36,35 +36,34 @@ class FireDetector:
         - should_alert() method for backend integration
     """
     
-    def __init__(self, confidence_threshold=0.65, temporal_window=15, temporal_min=8,
+    def __init__(self, confidence_threshold=0.65, temporal_window=15, temporal_min=7,
                  fire_model_path="fire_yolov8n.pt"):
         
-        # ===== FLAME COLOR BOUNDS (widened for matches/lighters) =====
-        self.flame_lower = np.array([0, 80, 150], dtype=np.uint8)
-        self.flame_upper = np.array([35, 255, 255], dtype=np.uint8)
+        # ===== FLAME COLOR BOUNDS (balanced: catches fire, rejects skin/warm lighting) =====
+        self.flame_lower = np.array([0, 100, 180], dtype=np.uint8)
+        self.flame_upper = np.array([30, 255, 255], dtype=np.uint8)
         
-        # ===== SMOKE COLOR BOUNDS (tightened to avoid false triggers on walls/skin) =====
-        self.smoke_lower = np.array([0, 0, 180], dtype=np.uint8)
-        self.smoke_upper = np.array([180, 25, 255], dtype=np.uint8)
+        # ===== SMOKE COLOR BOUNDS (mid-gray haze only, NOT bright white surfaces) =====
+        self.smoke_lower = np.array([0, 0, 120], dtype=np.uint8)
+        self.smoke_upper = np.array([180, 30, 210], dtype=np.uint8)
         
         # ===== THRESHOLDS =====
         self.confidence_threshold = confidence_threshold
-        self.smoke_area_threshold = 25000    # Higher bar—reduce false smoke from bright walls
-        self.flame_area_threshold = 150      # Even tinier fires (match tips = ~150px)
-        self.edge_chaos_threshold = 0.20     # A match's edge IS chaotic at small scales
-        self.brightness_threshold = 230      # Slight bloom from a match tip
-        self.bloom_area_threshold = 50       # 50px bloom for match-scale early warning
+        self.smoke_area_threshold = 25000    # Raised to reject more false positives
+        self.flame_area_threshold = 250      # Middle ground (was 150=too low, 300=too high)
+        self.edge_chaos_threshold = 0.25     # Middle ground
+        self.brightness_threshold = 235      # Between 230 and 240
+        self.bloom_area_threshold = 80       # Between 50 and 100
         
-        # ===== LAYER WEIGHTS =====
-        # Flame color + flicker are the strongest real-fire signals for small fires
-        self.W_FLAME_COLOR = 0.20
-        self.W_FLICKER = 0.25
+        # ===== LAYER WEIGHTS (balanced) =====
+        self.W_FLAME_COLOR = 0.18
+        self.W_FLICKER = 0.22
         self.W_SMOKE = 0.10
-        self.W_EDGE_CHAOS = 0.10
-        self.W_PLASMA = 0.10
-        self.W_HEATMAP = 0.05
-        self.W_BLOOM = 0.15
-        self.W_TEMPORAL = 0.05
+        self.W_EDGE_CHAOS = 0.12
+        self.W_PLASMA = 0.12
+        self.W_HEATMAP = 0.06
+        self.W_BLOOM = 0.12
+        self.W_TEMPORAL = 0.08
         
         # ===== SPATIAL HEATMAP =====
         self.heatmap = None
@@ -218,9 +217,6 @@ class FireDetector:
             flame_mask = cv2.morphologyEx(flame_mask, cv2.MORPH_OPEN, kernel)
             flame_pixels = cv2.countNonZero(flame_mask)
             
-            if flame_pixels > self.flame_area_threshold:
-                confidence += self.W_FLAME_COLOR * min(flame_pixels / (self.flame_area_threshold * 3), 1.0)
-            
             # =============================================
             # LAYER 2: MOTION FLICKER DETECTION
             # =============================================
@@ -229,6 +225,14 @@ class FireDetector:
             
             flicker_mask = cv2.bitwise_and(flame_mask, motion_mask)
             flicker_pixels = cv2.countNonZero(flicker_mask)
+            
+            # PHYSICS GATE: Real fire ALWAYS flickers. Static warm sources (electronics,
+            # heated surfaces, warm LEDs) never flicker. Only award flame color confidence
+            # if at least 15% of flame pixels are also flickering.
+            flicker_ratio = flicker_pixels / max(flame_pixels, 1)
+            
+            if flame_pixels > self.flame_area_threshold and flicker_ratio > 0.15:
+                confidence += self.W_FLAME_COLOR * min(flame_pixels / (self.flame_area_threshold * 3), 1.0)
             
             if flicker_pixels > 100:
                 confidence += self.W_FLICKER * min(flicker_pixels / 800.0, 1.0)
@@ -246,14 +250,18 @@ class FireDetector:
             smoke_motion = cv2.bitwise_and(smoke_binary, motion_mask)
             smoke_motion_pixels = cv2.countNonZero(smoke_motion)
             
-            if smoke_pixels > self.smoke_area_threshold and smoke_motion_pixels > 5000:
+            # PHYSICS GATE: Real smoke drifts and moves. Walls/white surfaces are static.
+            # Require at least 25% of smoke pixels to be actively moving.
+            smoke_motion_ratio = smoke_motion_pixels / max(smoke_pixels, 1)
+            
+            if smoke_pixels > self.smoke_area_threshold and smoke_motion_pixels > 10000 and smoke_motion_ratio > 0.30:
                 smoke_score = min(smoke_pixels / (self.smoke_area_threshold * 4), 1.0)
                 confidence += self.W_SMOKE * smoke_score
                 self.smoke_history.append(True)
             else:
                 self.smoke_history.append(False)
             
-            if sum(self.smoke_history) >= 10:
+            if sum(self.smoke_history) >= 13:
                 self.smoke_confirmed = True
             else:
                 self.smoke_confirmed = False
@@ -310,14 +318,13 @@ class FireDetector:
             if flame_pixels > self.flame_area_threshold:
                 h_channel = hsv[:,:,0]
                 pixels = h_channel[flame_mask > 0]
-                if len(pixels) > 30:
+                if len(pixels) > 40:
                     hue_std = np.std(pixels)
-                    if hue_std > 3.0:
-                        # Reward for gradient plasma (real fire)
-                        confidence += self.W_PLASMA * min((hue_std - 3.0) / 8.0, 1.0)
+                    if hue_std > 3.5:
+                        confidence += self.W_PLASMA * min((hue_std - 3.5) / 9.0, 1.0)
                     else:
-                        # Soft penalty: monochromatic, but don't destroy small fires
-                        confidence -= 0.08
+                        # Moderate penalty for monochromatic
+                        confidence -= 0.15
             
             # =============================================
             # LAYER 9: AREA GROWTH VELOCITY
@@ -330,12 +337,12 @@ class FireDetector:
                 area_delta = abs(flame_pixels - self.prev_flame_pixels)
                 delta_ratio = area_delta / max(self.prev_flame_pixels, 1)
                 
-                if delta_ratio < 0.005:
-                    # Soft penalty for perfectly static sizes (clothing)
-                    confidence -= 0.05
-                elif delta_ratio > 0.03:
-                    # Reward turbulent size changes (real flames flicker)
-                    confidence += 0.12
+                if delta_ratio < 0.008:
+                    # Moderate penalty for rigid static objects
+                    confidence -= 0.12
+                elif delta_ratio > 0.04:
+                    # Reward turbulent flickering
+                    confidence += 0.10
                 
                 self.prev_flame_pixels = flame_pixels
             
@@ -343,14 +350,12 @@ class FireDetector:
             # LAYER 10: TEMPORAL CONSENSUS & SYNERGY
             # =============================================
             # Synergy Boost: If localized area is chaotic, heavily flickering, AND has plasma gradient.
-            if flame_pixels > self.flame_area_threshold and flicker_pixels > 50 and edge_density > 0.15 and hue_std > 3.0:
-                confidence += 0.35  # Strong proof of real fire
-            elif flame_pixels > self.flame_area_threshold and flicker_pixels > 30:
-                confidence += 0.15  # Weak but present — small fire / match
+            if flame_pixels > self.flame_area_threshold and flicker_pixels > 100 and edge_density > 0.20 and hue_std > 3.5:
+                confidence += 0.30  # Strong multi-signal proof of real fire
                 
             self.history.append(confidence)
             
-            high_conf_frames = sum(1 for c in self.history if c > 0.25)
+            high_conf_frames = sum(1 for c in self.history if c > 0.28)
             if high_conf_frames >= self.temporal_min:
                 confidence += self.W_TEMPORAL * 1.0
             
