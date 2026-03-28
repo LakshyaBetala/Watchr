@@ -108,13 +108,15 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
           let sysSec = payload.theft ? "THREAT" : "OK";
           let sysSaf = payload.fire ? "CRITICAL" : (payload.smoke ? "WARNING" : "CLEAR");
 
+          const clip = payload.http_clip_url || payload.clip_url || "";
+
           if (payload.theft) {
-            newAlerts.unshift({ id: `live-${Date.now()}-t`, ts, type: "theft", msg: "SUSPICIOUS BEHAVIOR DETECTED", sev: "critical" });
+            newAlerts.unshift({ id: `live-${Date.now()}-t`, ts, type: "theft", msg: "SUSPICIOUS BEHAVIOR", sev: "critical", clip_url: clip });
           }
           if (payload.fire) {
-            newAlerts.unshift({ id: `live-${Date.now()}-f`, ts, type: "fire", msg: "FIRE DETECTED", sev: "critical" });
+            newAlerts.unshift({ id: `live-${Date.now()}-f`, ts, type: "fire", msg: "FIRE INCIDENT", sev: "critical", clip_url: clip });
           } else if (payload.smoke) {
-            newAlerts.unshift({ id: `live-${Date.now()}-s`, ts, type: "smoke", msg: "SMOKE DETECTED", sev: "warning" });
+            newAlerts.unshift({ id: `live-${Date.now()}-s`, ts, type: "smoke", msg: "SMOKE DETECTED", sev: "warning", clip_url: clip });
           }
           newAlerts = newAlerts.slice(0, 20);
 

@@ -1,13 +1,20 @@
-from flask import Blueprint, request, jsonify, Response
+from flask import Blueprint, request, jsonify, Response, send_from_directory
 from services.decision_engine import process_detection_event
 from services.gemini_service import gemini_engine, insights_clients
 import json
+import queue
+import os
 import queue
 
 detect_bp = Blueprint('detect', __name__)
 
 # Thread-safe broadcast queues for connected SSE clients
 clients = []
+
+@detect_bp.route("/evidence/<path:filename>", methods=["GET"])
+def serve_evidence(filename):
+    evidence_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "ai-engine", "evidence", "theft")
+    return send_from_directory(evidence_dir, filename)
 
 @detect_bp.route("/stream", methods=["GET"])
 def stream():
@@ -37,6 +44,15 @@ def detect():
     data = request.json
     if not data:
         return jsonify({"error": "Invalid JSON payload"}), 400
+        
+    clip_path = data.get("clip_url", "")
+    http_clip_url = clip_path
+    if clip_path and str(clip_path).startswith("/"):
+        filename = os.path.basename(clip_path)
+        http_clip_url = f"http://localhost:5050/api/evidence/{filename}"
+        
+    data["http_clip_url"] = http_clip_url
+    data["absolute_clip_path"] = clip_path
         
     # Dispatch logic inside the decision engine
     event_state = process_detection_event(data)

@@ -1,3 +1,4 @@
 opencv-python
-ultralytics
-numpy
+ultralytics==8.2.103
+numpy<2.0
+requests

@@ -202,11 +202,7 @@ function SysTelemetry({ collapsed }: { collapsed: boolean }) {
   const [cpu, setCpu] = useState(34);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setFps(24 + Math.floor(Math.random() * 8));
-      setCpu(28 + Math.floor(Math.random() * 20));
-    }, 2500);
-    return () => clearInterval(id);
+    // Rely on true backend metrics or static fallback
   }, []);
 
   return (

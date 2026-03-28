@@ -22,8 +22,8 @@ class Config:
     STORE_ID = "STR-001"
     
     # Supabase Credentials
-    SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')
+    SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://jqybouilcscdjouueaum.supabase.co')
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'dummy_key')
 
     # Email / Twilio SendGrid settings
     MAIL_SENDER = 'gkavin446@gmail.com'

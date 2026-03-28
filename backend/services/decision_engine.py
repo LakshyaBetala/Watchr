@@ -16,7 +16,8 @@ def process_detection_event(ai_data):
     fire_detected = ai_data.get("fire", False)
     thermal_temp = ai_data.get("thermal_temp", 25)
     cross_sell = ai_data.get("cross_sell_opportunity", False)
-    clip_url = ai_data.get("clip_url", "http://camera-node.local/clip.mp4")
+    clip_url = ai_data.get("http_clip_url", ai_data.get("clip_url", "http://camera-node.local/clip.mp4"))
+    absolute_clip_path = ai_data.get("absolute_clip_path", "")
     
     # 1. Provide Tracking & Unattended Logic
     if tracked_ids:
@@ -41,6 +42,7 @@ def process_detection_event(ai_data):
             "confidence": ai_data.get("confidence", 0.99), 
             "type": "visual", 
             "clip_url": clip_url,
+            "absolute_clip_path": absolute_clip_path,
             "people_details": ai_data.get("people_details", "No specific people details available.")
         }
     elif thermal_temp > Config.THERMAL_SPIKE_THRESHOLD:
@@ -53,7 +55,12 @@ def process_detection_event(ai_data):
         }
     elif theft_detected:
         event = "THEFT_DETECTED"
-        details = {"confidence": ai_data.get("confidence", 0.99)}
+        details = {
+            "confidence": ai_data.get("confidence", 0.99),
+            "clip_url": clip_url,
+            "absolute_clip_path": absolute_clip_path,
+            "suspect_details": ai_data.get("suspect_details", [])
+        }
     elif cross_sell:
         event = "CROSS_SELL_OPPORTUNITY"
         details = {"target_ids": tracked_ids, "action": "Staff assistance recommended"}

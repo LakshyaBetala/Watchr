@@ -4,7 +4,7 @@ import {
   Settings as SettingsIcon, Building2, MapPin, Video, Users, BellRing,
   CheckCircle2, AlertCircle, Save, Plus, Edit2, Trash2, ShieldCheck, UserCheck, Activity, EyeOff
 } from "lucide-react";
-import { orgData, storesData, camerasData, usersData } from "@/data/watchrMockData";
+import { useDashboardStore } from "@/store/dashboardStore";
 
 const containerVar = {
   hidden: { opacity: 0 },
@@ -16,6 +16,7 @@ const itemVar = {
 };
 
 export default function Settings() {
+  const { orgData, storesData, camerasData, usersData } = useDashboardStore();
   const [activeTab, setActiveTab] = useState("organization");
   const [savedMsg, setSavedMsg] = useState(false);
 

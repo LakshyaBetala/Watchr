@@ -18,6 +18,7 @@ ESCALATION_THRESHOLD = 120
 
 def notify_firestation(details):
     clip = details.get("clip_url", "No Clip Available")
+    clip_path = details.get("absolute_clip_path", None)
     logger.warning(f"🚨 URGENT: Reporting fire incident to {Config.FIRE_STATION_EMAIL}")
     
     msg = MIMEMultipart("mixed")
@@ -34,16 +35,31 @@ def notify_firestation(details):
         <div style="background: #f8f9fa; padding: 15px; text-align: center; margin-top: 20px;">
             <p><b>Live Camera Evidence</b></p>
             <a href="{clip}" style="background: #ff4b2b; color: white; padding: 12px 24px; text-decoration: none;">WATCH CLIP NOW</a>
+            <p style="font-size: 11px; margin-top: 10px; color: #555;">(Or watch the attached MP4 file at the bottom of this email!)</p>
         </div>
     </div>
     """
     msg.attach(MIMEText(html_body, "html"))
+    
+    if clip_path and os.path.exists(clip_path):
+        try:
+            with open(clip_path, "rb") as f:
+                attachment = MIMEBase("application", "octet-stream")
+                attachment.set_payload(f.read())
+            encoders.encode_base64(attachment)
+            attachment.add_header("Content-Disposition", f"attachment; filename={os.path.basename(clip_path)}")
+            msg.attach(attachment)
+            logger.info(f"📎 Video evidence attached: {clip_path}")
+        except Exception as e:
+            logger.error(f"Failed to attach video evidence: {e}")
+            
     _send_email(msg)
 
 
 def notify_theft(details):
     suspect_info = details.get("suspect_details", [])
-    clip_path = details.get("clip_url", None)
+    clip_path = details.get("absolute_clip_path", details.get("clip_url", None))
+    clip_url = details.get("clip_url", "#")
     
     logger.warning(f"🚨 THEFT ALERT: Notifying store owner")
     
@@ -54,13 +70,22 @@ def notify_theft(details):
     
     suspect_html = ""
     for s in suspect_info:
-        suspect_html += f"""
+        # Handle both dict-format suspects (from AI engine) and plain string descriptions
+        if isinstance(s, dict):
+            suspect_html += f"""
         <tr>
             <td style="padding: 8px; border: 1px solid #ddd;">ID: {s.get('id', 'N/A')}</td>
             <td style="padding: 8px; border: 1px solid #ddd;">{s.get('confidence', 0)*100:.0f}%</td>
             <td style="padding: 8px; border: 1px solid #ddd;">{'YES' if s.get('trajectory_anomaly') else 'NO'}</td>
             <td style="padding: 8px; border: 1px solid #ddd;">{'YES' if s.get('confidence_drop') else 'NO'}</td>
             <td style="padding: 8px; border: 1px solid #ddd;">{' → '.join(s.get('zone_path', [])[-5:])}</td>
+        </tr>
+        """
+        else:
+            # Plain string description — render as a single full-width row
+            suspect_html += f"""
+        <tr>
+            <td colspan="5" style="padding: 8px; border: 1px solid #ddd;">{s}</td>
         </tr>
         """
     
@@ -79,6 +104,10 @@ def notify_theft(details):
             </tr>
             {suspect_html}
         </table>
+        <div style="background: #f8f9fa; padding: 15px; text-align: center; margin-top: 20px;">
+            <p><b>Video Evidence</b></p>
+            <a href="{clip_url}" style="background: #e74c3c; color: white; padding: 12px 24px; text-decoration: none;">WATCH THEFT CLIP</a>
+        </div>
     </div>
     """
     msg.attach(MIMEText(html_body, "html"))

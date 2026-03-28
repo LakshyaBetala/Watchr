@@ -160,7 +160,14 @@ function AlertTicker() {
               className={`flex items-start gap-2 px-3 py-2 rounded border ${s.border} ${s.bg} text-xs font-mono`}>
               <span className={`mt-0.5 flex-shrink-0 ${s.text}`}>{s.icon}</span>
               <span className="text-[#8c9baf] flex-shrink-0">{a.ts}</span>
-              <span className={s.text}>{a.msg}</span>
+              <div className="flex flex-col gap-1 w-full text-left">
+                <span className={s.text}>{a.msg}</span>
+                {a.clip_url && (
+                   <a href={a.clip_url} target="_blank" rel="noreferrer" className={`text-[9px] font-mono mt-1 ${s.text} opacity-80 hover:opacity-100 hover:underline inline-flex items-center gap-1 w-max`}>
+                      ► PLAY EVIDENCE CLIP
+                   </a>
+                )}
+              </div>
             </motion.li>
           );
         })}
@@ -201,8 +208,6 @@ export default function LiveCanvas() {
 
   useEffect(() => {
     connectTelemetryStream();
-    const id = setInterval(() => setFps(24 + Math.floor(Math.random() * 8)), 2000);
-    return () => clearInterval(id);
   }, []);
 
   return (
