@@ -22,13 +22,14 @@ class Config:
     STORE_ID = "STR-001"
     
     # Supabase Credentials
-    SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://jqybouilcscdjouueaum.supabase.co')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'dummy_key')
+    SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')
 
     # Email / Twilio SendGrid settings
-    MAIL_SENDER = 'gkavin446@gmail.com'
-    FIRE_STATION_EMAIL = 'gkavin583@gmail.com'
+    MAIL_SENDER = os.environ.get('MAIL_SENDER', '')
+    FIRE_STATION_EMAIL = os.environ.get('FIRE_STATION_EMAIL', '')
     SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '')
+
 
     # Emergency SMTP Backup (If SendGrid is Deferred)
     USE_SMTP = True 
