@@ -132,7 +132,7 @@ def visualize_zones(frame, zone_mapper, tracking_dict, mapping_dict):
         else:
             zx1, zy1, zx2, zy2 = zone_bbox
         cv2.rectangle(frame, (int(zx1), int(zy1)), (int(zx2), int(zy2)), (255, 50, 50), 2)
-        cv2.putText(frame, f"ZONE: {zone_name.upper()}", (zx1 + 5, zy1 + 25), 
+        cv2.putText(frame, f"ZONE: {zone_name.upper()}", (int(zx1) + 5, int(zy1) + 25), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 50, 50), 2, cv2.LINE_AA)
 
     if tracking_dict and "objects" in tracking_dict:

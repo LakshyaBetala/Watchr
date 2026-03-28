@@ -79,6 +79,17 @@ class FireDetector:
         self.smoke_history = deque(maxlen=15)
         self.smoke_confirmed = False
         
+        # ===== EVIDENCE CAPTURE STATE =====
+        self.recording = False
+        self.video_writer = None
+        self.record_start_time = None
+        self.evidence_dir = os.path.join(os.path.dirname(__file__), "evidence", "fire")
+        os.makedirs(self.evidence_dir, exist_ok=True)
+        self.latest_evidence_path = None
+        
+        # TIME MACHINE BUFFER: Keep 10 seconds of history (assumes ~15 FPS => 150 frames)
+        self.frame_buffer = deque(maxlen=150)
+        
         # ===== STATE =====
         self.frame_count = 0
         self.prev_gray = None
@@ -309,7 +320,26 @@ class FireDetector:
                         confidence -= 0.25
             
             # =============================================
-            # LAYER 9: TEMPORAL CONSENSUS & SYNERGY
+            # LAYER 9: AREA GROWTH VELOCITY
+            # =============================================
+            # Real fire expands/flickers turbulently. Static objects remain the exact same size.
+            if flame_pixels > self.flame_area_threshold:
+                if not hasattr(self, 'prev_flame_pixels'):
+                    self.prev_flame_pixels = flame_pixels
+                
+                area_delta = abs(flame_pixels - self.prev_flame_pixels)
+                delta_ratio = area_delta / max(self.prev_flame_pixels, 1)
+                
+                if delta_ratio < 0.01:
+                    # Massively penalize perfectly static sizes (like a cone or a rigid shirt)
+                    confidence -= 0.30
+                elif delta_ratio > 0.05:
+                    confidence += 0.10
+                
+                self.prev_flame_pixels = flame_pixels
+            
+            # =============================================
+            # LAYER 10: TEMPORAL CONSENSUS & SYNERGY
             # =============================================
             # Synergy Boost: If localized area is chaotic, heavily flickering, AND has plasma gradient.
             if flame_pixels > self.flame_area_threshold and flicker_pixels > 200 and edge_density > 0.25 and hue_std > 4.0:
@@ -377,6 +407,42 @@ class FireDetector:
         self.last_fire_alert_frame = self.frame_count
         return True
 
+    def buffer_frame(self, frame):
+        """Store historical frames for retrospective recording."""
+        if not getattr(self, 'recording', False):
+            self.frame_buffer.append(frame.copy())
+            
+    def start_evidence_recording(self, frame, fps=15):
+        import time, cv2
+        if self.recording: return
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        self.latest_evidence_path = os.path.join(self.evidence_dir, f"fire_evidence_{timestamp}.mp4")
+        
+        h, w = frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.video_writer = cv2.VideoWriter(self.latest_evidence_path, fourcc, fps, (w, h))
+        self.recording = True
+        self.record_start_time = time.time()
+        
+        while self.frame_buffer:
+            hist_frame = self.frame_buffer.popleft()
+            self.video_writer.write(hist_frame)
+    
+    def record_frame(self, frame):
+        import time
+        if not getattr(self, 'recording', False) or getattr(self, 'video_writer', None) is None: return False
+        self.video_writer.write(frame)
+        if time.time() - getattr(self, 'record_start_time', time.time()) >= 30:
+            self.stop_evidence_recording()
+            return False
+        return True
+
+    def stop_evidence_recording(self):
+        self.recording = False
+        if getattr(self, 'video_writer', None):
+            self.video_writer.release()
+            self.video_writer = None
 
 if __name__ == "__main__":
     logger.info("=== FIRE & SMOKE SENTINEL SELF-TEST ===")

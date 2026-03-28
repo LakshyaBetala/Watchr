@@ -53,14 +53,22 @@ class TheftDetectionEngine:
         self.recording = False
         self.video_writer = None
         self.record_start_time = None
-        self.evidence_dir = os.path.join(os.path.dirname(__file__), "evidence")
+        self.evidence_dir = os.path.join(os.path.dirname(__file__), "evidence", "theft")
         os.makedirs(self.evidence_dir, exist_ok=True)
         self.latest_evidence_path = None
+        
+        # TIME MACHINE BUFFER: Keep 10 seconds of history (assumes ~15 FPS => 150 frames)
+        self.frame_buffer = deque(maxlen=150)
         
         # ===== ALERT DEDUPLICATION =====
         self.alert_cooldown = {}
         self.ALERT_COOLDOWN_SECS = 300  # 5 minutes
         
+    def buffer_frame(self, frame):
+        """Silently store historical frames for retrospective recording."""
+        if not self.recording:
+            self.frame_buffer.append(frame.copy())
+
     def _init_state(self):
         return {
             # Zone tracking
@@ -101,6 +109,7 @@ class TheftDetectionEngine:
             
             # Roles
             "dwell_time_billing": 0,
+            "billed_items": False,
             "confidence": 0.0,
             "alerted": False,
             "first_seen": time.time(),
@@ -159,6 +168,9 @@ class TheftDetectionEngine:
             elif current_zone == "billing":
                 s["dwell_time_billing"] += 1
                 s["visited_billing"] = True
+                # If they dwell here for ~10 seconds (150 frames), they paid.
+                if s["dwell_time_billing"] > 150:
+                    s["billed_items"] = True
                 
             elif current_zone == "exit":
                 s["entered_exit"] = True
@@ -220,7 +232,8 @@ class TheftDetectionEngine:
             # =============================================
             # LAYER 2: TRAJECTORY ANOMALY
             # =============================================
-            if s["shelf_engaged"] and s["entered_exit"] and not s["visited_billing"]:
+            # Must hit exit after shelf WITHOUT dwelling at billing for >10s
+            if s["shelf_engaged"] and s["entered_exit"] and not s["billed_items"]:
                 s["trajectory_anomaly"] = True
                 
             # =============================================
@@ -290,7 +303,9 @@ class TheftDetectionEngine:
             # =============================================
             # ROLE CLASSIFICATION
             # =============================================
-            if s["dwell_time_billing"] > 60:
+            if s["billed_items"]:
+                roles[obj_id] = "CUSTOMER"
+            elif s["dwell_time_billing"] > 600:
                 roles[obj_id] = "STAFF"
             elif s["confidence"] >= self.confidence_threshold:
                 roles[obj_id] = "SUSPECT"
@@ -318,6 +333,14 @@ class TheftDetectionEngine:
         self.recording = True
         self.record_start_time = time.time()
         logger.info(f"📹 Evidence recording started: {self.latest_evidence_path}")
+        
+        # Dump the time-machine buffer into the physical file FIRST
+        frames_dumped = 0
+        while self.frame_buffer:
+            hist_frame = self.frame_buffer.popleft()
+            self.video_writer.write(hist_frame)
+            frames_dumped += 1
+        logger.info(f"   [RETROSPECTIVE INJECT]: Dumped past {frames_dumped} frames of evidence.")
     
     def record_frame(self, frame):
         if not self.recording or self.video_writer is None: return False

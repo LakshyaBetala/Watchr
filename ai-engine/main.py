@@ -39,6 +39,50 @@ def get_dominant_color(image, k=3):
     except Exception:
         return [128, 128, 128]
 
+def color_name(b, g, r):
+    colors = {
+        "Red": (0, 0, 255), "Green": (0, 255, 0), "Blue": (255, 0, 0),
+        "Yellow": (0, 255, 255), "Black": (0, 0, 0), "White": (255, 255, 255),
+        "Gray": (128, 128, 128), "Orange": (0, 165, 255), "Purple": (128, 0, 128),
+        "Brown": (0, 75, 150),
+    }
+    min_dist = float('inf')
+    closest = "Unknown"
+    for name, (cb, cg, cr) in colors.items():
+        dist = (cb-b)**2 + (cg-g)**2 + (cr-r)**2
+        if dist < min_dist:
+            min_dist = dist
+            closest = name
+    return closest
+
+def play_audio_then_speak(mp3_filename, loops, text):
+    """Zero-latency background Pygame MP3 loop + TTS."""
+    import subprocess, threading, os
+    def _worker():
+        import time
+        audio_path = os.path.join(os.path.dirname(__file__), "audio", mp3_filename)
+        if os.path.exists(audio_path):
+            try:
+                import pygame
+                pygame.mixer.init()
+                pygame.mixer.music.load(audio_path)
+                pygame.mixer.music.play(loops - 1)
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.1)
+                pygame.mixer.quit()
+            except Exception as e:
+                pass
+        else:
+            import winsound
+            for _ in range(loops):
+                winsound.Beep(1200, 500)
+                time.sleep(0.2)
+                
+        safe_text = str(text).replace("'", "")
+        cmd = f'powershell -c "Add-Type -AssemblyName System.speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(\'{safe_text}\')"'
+        subprocess.run(cmd, shell=True)
+    threading.Thread(target=_worker, daemon=True).start()
+
 
 def dispatch_to_backend(payload):
     """Fire-and-forget HTTP POST to Flask backend."""
@@ -145,6 +189,11 @@ def main():
     global_suspect_signatures = []
     fps_counter = time.perf_counter()
     frame_number = 0
+    
+    # ── AUDIO TRACKERS ──
+    fire_duration_start = None
+    theft_last_spoke = 0
+    fire_last_spoke = 0
 
     # ─── MAIN LOOP ────────────────────────────────────────────────────
     while True:
@@ -233,6 +282,7 @@ def main():
                 zones_output = {"zones": {}, "dwell_times": {}, "transitions": []}
 
             # ── 5. THEFT DETECTION (with confidence-drop analysis) ───
+            theft_engine.buffer_frame(frame)
             try:
                 theft_output = theft_engine.detect_theft(
                     zones_output, 
@@ -252,7 +302,12 @@ def main():
                 logger.error(f"Theft engine failed: {e}")
                 theft_output = {"theft": False, "suspects": [], "roles": {}, "suspect_details": []}
 
-            # ── 6. FIRE & SMOKE DETECTION (skip every 5th frame for perf) ──
+            # ── 6. FIRE & SMOKE DETECTION ──
+            try:
+                if hasattr(fire_engine, 'buffer_frame'):
+                    fire_engine.buffer_frame(frame)
+            except Exception: pass
+            
             if frame_number % 5 == 0:
                 try:
                     fire_output = fire_engine.detect_fire(frame, prev_frame)
@@ -262,6 +317,14 @@ def main():
             else:
                 if 'fire_output' not in locals():
                     fire_output = {"fire": False, "smoke": False, "confidence": 0.0}
+            
+            try:
+                if fire_output.get("fire") and not getattr(fire_engine, 'recording', False):
+                    if hasattr(fire_engine, 'start_evidence_recording'):
+                        fire_engine.start_evidence_recording(frame)
+                if getattr(fire_engine, 'recording', False) and hasattr(fire_engine, 'record_frame'):
+                    fire_engine.record_frame(frame)
+            except Exception: pass
 
             prev_frame = frame.copy()
 
@@ -398,7 +461,7 @@ def main():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.3, status_color, 1)
                     y_off += 14
                 
-                # Theft / ReID overlay
+                # Theft / ReID overlay + AUDIO
                 if system_payload["theft"]:
                     store_lockdown = True
                     for sid in system_payload.get("suspects", []):
@@ -408,13 +471,33 @@ def main():
                             h = y2 - y1
                             roi = frame[max(0,y1+int(h*0.2)):y2-int(h*0.2), max(0,x1):x2]
                             if roi.size > 0:
-                                global_suspect_signatures.append(get_dominant_color(roi))
+                                dom_c = get_dominant_color(roi)
+                                global_suspect_signatures.append(dom_c)
+                                
+                                # Voice Alert Logic
+                                if time.time() - theft_last_spoke > 15:
+                                    c_name = color_name(*dom_c)
+                                    zone_loc = system_payload["zones"].get(str(sid), "unknown").replace("_", " ")
+                                    txt = f"Theft detected. Customer in {c_name} shirt near {zone_loc}."
+                                    play_audio_then_speak("theft_audio.mp3", 1, txt)
+                                    theft_last_spoke = time.time()
                 
                 if store_lockdown:
                     cv2.putText(display_frame, "STORE LOCKDOWN: THEFT IN PROGRESS", (30, 40),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3, cv2.LINE_AA)
                 
-                # Smoke / Fire overlays
+                # Smoke / Fire overlays + 5 SEC AUDIO DELAY
+                if system_payload.get("smoke") or system_payload.get("fire"):
+                    if fire_duration_start is None:
+                        fire_duration_start = time.time()
+                    elif time.time() - fire_duration_start > 5.0:
+                        if time.time() - fire_last_spoke > 30:
+                            txt = "Warning. Fire danger detected. Please evacuate."
+                            play_audio_then_speak("fire_audio.mp3", 3, txt)
+                            fire_last_spoke = time.time()
+                else:
+                    fire_duration_start = None
+
                 if system_payload.get("smoke") and not system_payload["fire"]:
                     ov = display_frame.copy()
                     cv2.rectangle(ov, (0,0), (fw, 50), (0,140,255), -1)
