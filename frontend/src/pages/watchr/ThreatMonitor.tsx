@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import { ShieldAlert, Activity, Flame, Clock, AlertTriangle, LogIn, Eye, ZapOff, DoorOpen, XCircle, LogOut } from "lucide-react";
 import { BaseCard, KpiCard, TrendBadge } from "./components/DashboardUI";
+import BehavioralStatePathVisualizer from "./BehavioralStatePathVisualizer";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface LogEvent {
@@ -102,7 +103,10 @@ export default function ThreatMonitor() {
 
   return (
     <div className="dashboard-grid min-h-screen">
-      
+      <div className="col-12">
+        <BehavioralStatePathVisualizer />
+      </div>
+
       {/* ── BANNER ───────────────────────────────────────────────────────────── */}
       <motion.div
         initial={{ opacity: 0, y: -12 }}
